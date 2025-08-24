@@ -1,8 +1,8 @@
 use hex;
 use sha1::{Digest, Sha1};
-use std::fs;
-use std::fs::File;
-use std::io::{BufReader, Read, Result, Write};
+use std::cmp::min;
+use std::fs::{File, metadata};
+use std::io::{Read, Result, Write};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -102,18 +102,18 @@ impl TrInfo {
         let mut single_file = false;
 
         // check if target path is file or directory
-        let metadata = fs::metadata(base_path).unwrap();
+        let base_metadata = metadata(base_path).unwrap();
         let mut tr_files: Vec<TrFile> = Vec::new();
-        if metadata.is_file() {
+        if base_metadata.is_file() {
             file_list.push(base_path.to_path_buf());
             single_file = true;
-        } else if metadata.is_dir() {
+        } else if base_metadata.is_dir() {
             // read directory recursively
             for entry in WalkDir::new(base_path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
                     file_list.push(entry.path().to_path_buf());
                     tr_files.push(TrFile {
-                        length: fs::metadata(&entry.path()).unwrap().len(),
+                        length: metadata(&entry.path()).unwrap().len(),
                         path: entry
                             .path()
                             .strip_prefix(base_path)
@@ -132,34 +132,45 @@ impl TrInfo {
         }
 
         let chunk_size: usize = 1 << piece_size;
-        let mut buf = vec![0u8; 1 << 16]; // 64 KiB buffer
-        let mut piece_bytes = Vec::with_capacity(chunk_size);
+        let mut buf = vec![0u8; 1 << 18]; // 256 KiB buffer
+        let mut piece_buf = vec![0u8; chunk_size];
+        let mut piece_pos = 0usize;
         let mut pieces = Vec::new();
         let mut piece_count = 0u64;
+        let mut hasher = Sha1::new();
 
         for file_path in &file_list {
-            let mut f = BufReader::new(File::open(file_path).unwrap());
+            let mut f = File::open(file_path).unwrap();
 
             loop {
                 let n = f.read(&mut buf).unwrap();
                 if n == 0 {
                     break;
                 }
-                piece_bytes.extend_from_slice(&buf[..n]);
 
-                while piece_bytes.len() >= chunk_size {
-                    let mut hasher = Sha1::new();
-                    hasher.update(&piece_bytes[..chunk_size]);
-                    pieces.extend_from_slice(&hasher.finalize_reset());
-                    piece_bytes.drain(..chunk_size);
-                    piece_count += 1;
+                let mut buf_pos = 0;
+                while buf_pos < n {
+                    let space = chunk_size - piece_pos;
+                    let to_copy = min(space, n - buf_pos);
+
+                    piece_buf[piece_pos..piece_pos + to_copy]
+                        .copy_from_slice(&buf[buf_pos..buf_pos + to_copy]);
+
+                    piece_pos += to_copy;
+                    buf_pos += to_copy;
+
+                    if piece_pos == chunk_size {
+                        hasher.update(&piece_buf);
+                        pieces.extend_from_slice(&hasher.finalize_reset());
+                        piece_count += 1;
+                        piece_pos = 0;
+                    }
                 }
             }
         }
 
-        if !piece_bytes.is_empty() {
-            let mut hasher = Sha1::new();
-            hasher.update(&piece_bytes);
+        if piece_pos > 0 {
+            hasher.update(&piece_buf[..piece_pos]);
             pieces.extend_from_slice(&hasher.finalize());
             piece_count += 1;
         }
@@ -169,7 +180,7 @@ impl TrInfo {
         TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
             length: if single_file {
-                Some(metadata.len())
+                Some(base_metadata.len())
             } else {
                 None
             },
