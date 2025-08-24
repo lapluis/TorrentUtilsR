@@ -133,7 +133,6 @@ impl TrInfo {
 
         let chunk_size: usize = 1 << piece_size;
         let mut buf = vec![0u8; 1 << 18]; // 256 KiB buffer
-        let mut piece_buf = vec![0u8; chunk_size];
         let mut piece_pos = 0usize;
         let mut pieces = Vec::new();
         let mut piece_count = 0u64;
@@ -153,14 +152,12 @@ impl TrInfo {
                     let space = chunk_size - piece_pos;
                     let to_copy = min(space, n - buf_pos);
 
-                    piece_buf[piece_pos..piece_pos + to_copy]
-                        .copy_from_slice(&buf[buf_pos..buf_pos + to_copy]);
+                    hasher.update(&buf[buf_pos..buf_pos + to_copy]);
 
                     piece_pos += to_copy;
                     buf_pos += to_copy;
 
                     if piece_pos == chunk_size {
-                        hasher.update(&piece_buf);
                         pieces.extend_from_slice(&hasher.finalize_reset());
                         piece_count += 1;
                         piece_pos = 0;
@@ -170,7 +167,6 @@ impl TrInfo {
         }
 
         if piece_pos > 0 {
-            hasher.update(&piece_buf[..piece_pos]);
             pieces.extend_from_slice(&hasher.finalize());
             piece_count += 1;
         }
