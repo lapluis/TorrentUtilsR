@@ -1,8 +1,9 @@
 use hex;
 use sha1::{Digest, Sha1};
+use std::fs;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
-use std::{fs, io, path};
+use std::io::{BufReader, Read, Result, Write};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use walkdir::WalkDir;
 
 struct TrFile {
@@ -95,9 +96,9 @@ impl TrFile {
 impl TrInfo {
     fn new(target_path: String, piece_size: u64, private: bool) -> TrInfo {
         // get target path name
-        let base_path = path::Path::new(&target_path);
+        let base_path = Path::new(&target_path);
         let name = base_path.file_name().unwrap().to_str().unwrap();
-        let mut file_list: Vec<path::PathBuf> = Vec::new();
+        let mut file_list: Vec<PathBuf> = Vec::new();
         let mut single_file = false;
 
         // check if target path is file or directory
@@ -120,7 +121,7 @@ impl TrInfo {
                             .to_str()
                             .unwrap()
                             .to_string()
-                            .split(path::MAIN_SEPARATOR)
+                            .split(MAIN_SEPARATOR)
                             .map(|s| s.to_string())
                             .collect(),
                     });
@@ -130,50 +131,37 @@ impl TrInfo {
             panic!("Target path is neither a file nor a directory");
         }
 
-        let chunk_size: u64 = 1 << piece_size;
-        let mut buffer_length: u64 = 0;
-        let mut pieces: Vec<u8> = Vec::new();
-        let mut piece_count: u64 = 0;
-        let mut piece_bytes: Vec<u8> = Vec::new();
+        let chunk_size: usize = 1 << piece_size;
+        let mut buf = vec![0u8; 1 << 16]; // 64 KiB buffer
+        let mut piece_bytes = Vec::with_capacity(chunk_size);
+        let mut pieces = Vec::new();
+        let mut piece_count = 0u64;
 
         for file_path in &file_list {
-            let f = File::open(&file_path).unwrap();
-            let mut reader = BufReader::new(f);
+            let mut f = BufReader::new(File::open(file_path).unwrap());
+
             loop {
-                match Self::read_chunk(&mut reader, (chunk_size - buffer_length) as usize) {
-                    Ok(Some(chunk)) => {
-                        piece_bytes.extend(&chunk);
-                        if (piece_bytes.len() as u64) == chunk_size {
-                            // calculate SHA1 hash of piece_bytes
-                            let mut hasher = Sha1::new();
-                            hasher.update(&piece_bytes);
-                            let result = hasher.finalize();
-                            pieces.extend(&result);
-                            piece_bytes.clear();
-                            piece_count += 1u64;
-                        } else if (piece_bytes.len() as u64) < chunk_size {
-                            buffer_length = piece_bytes.len() as u64;
-                            continue;
-                        } else {
-                            panic!("PieceByte length exceeded chunk size");
-                        }
-                    }
-                    Ok(None) => break, // EOF
-                    Err(e) => panic!(
-                        "Error reading file {}: {}",
-                        file_path.to_str().unwrap().to_string(),
-                        e
-                    ),
+                let n = f.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                piece_bytes.extend_from_slice(&buf[..n]);
+
+                while piece_bytes.len() >= chunk_size {
+                    let mut hasher = Sha1::new();
+                    hasher.update(&piece_bytes[..chunk_size]);
+                    pieces.extend_from_slice(&hasher.finalize_reset());
+                    piece_bytes.drain(..chunk_size);
+                    piece_count += 1;
                 }
             }
         }
-        if buffer_length > 0 {
-            // calculate SHA1 hash of remaining piece_bytes
+
+        if !piece_bytes.is_empty() {
             let mut hasher = Sha1::new();
             hasher.update(&piece_bytes);
-            let result = hasher.finalize();
-            pieces.extend(&result);
-            piece_count += 1u64;
+            pieces.extend_from_slice(&hasher.finalize());
+            piece_count += 1;
         }
 
         println!("Total pieces: {}", piece_count);
@@ -186,20 +174,10 @@ impl TrInfo {
                 None
             },
             name: Some(name.to_string()),
-            piece_length: chunk_size,
+            piece_length: chunk_size as u64,
             pieces,
             private,
         }
-    }
-
-    fn read_chunk(reader: &mut BufReader<File>, chunk_size: usize) -> io::Result<Option<Vec<u8>>> {
-        let mut buffer = vec![0u8; chunk_size];
-        let n = reader.read(&mut buffer)?;
-        if n == 0 {
-            return Ok(None); // EOF
-        }
-        buffer.truncate(n);
-        Ok(Some(buffer))
     }
 
     fn bencode(&self) -> Vec<u8> {
@@ -232,9 +210,8 @@ impl TrInfo {
     }
 
     fn hash(&self) -> String {
-        let bencoded_info = self.bencode();
         let mut hasher = Sha1::new();
-        hasher.update(&bencoded_info);
+        hasher.update(&self.bencode());
         let result = hasher.finalize();
         hex::encode(result)
     }
@@ -251,7 +228,7 @@ impl Torrent {
         torrent_path: String,
         target_path: Option<String>,
         piece_size: Option<u64>,
-        prcess_mode: ProcessMode,
+        process_mode: ProcessMode,
 
         announce_list: Option<Vec<String>>,
         comment: Option<String>,
@@ -278,7 +255,7 @@ impl Torrent {
             None
         };
 
-        let info = match prcess_mode {
+        let info = match process_mode {
             ProcessMode::Create => {
                 if target_path.is_none() {
                     panic!("Target path is required for creating a torrent");
@@ -348,10 +325,9 @@ impl Torrent {
         bcode
     }
 
-    pub fn write_to_file(&self) -> io::Result<()> {
-        let bencoded_torrent = self.bencode();
+    pub fn write_to_file(&self) -> Result<()> {
         let mut file = File::create(&self.torrent_path)?;
-        file.write_all(&bencoded_torrent)?;
+        file.write_all(&self.bencode())?;
         Ok(())
     }
 }
