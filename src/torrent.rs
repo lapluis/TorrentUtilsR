@@ -97,51 +97,46 @@ impl TrInfo {
         // get target path name
         let base_path = path::Path::new(&target_path);
         let name = base_path.file_name().unwrap().to_str().unwrap();
-        let mut file_list: Vec<String> = Vec::new();
+        let mut file_list: Vec<path::PathBuf> = Vec::new();
         let mut single_file = false;
 
         // check if target path is file or directory
         let metadata = fs::metadata(base_path).unwrap();
+        let mut tr_files: Vec<TrFile> = Vec::new();
         if metadata.is_file() {
-            let rel_path = base_path.strip_prefix(base_path).unwrap();
-            file_list.push(rel_path.to_str().unwrap().to_string());
+            file_list.push(base_path.to_path_buf());
             single_file = true;
         } else if metadata.is_dir() {
             // read directory recursively
             for entry in WalkDir::new(base_path).into_iter().filter_map(|e| e.ok()) {
-                let path = entry.path();
-                let rel_path = path.strip_prefix(base_path).unwrap();
-                if path.is_file() {
-                    file_list.push(rel_path.to_str().unwrap().to_string());
+                if entry.file_type().is_file() {
+                    file_list.push(entry.path().to_path_buf());
+                    tr_files.push(TrFile {
+                        length: fs::metadata(&entry.path()).unwrap().len(),
+                        path: entry
+                            .path()
+                            .strip_prefix(base_path)
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_string()
+                            .split(path::MAIN_SEPARATOR)
+                            .map(|s| s.to_string())
+                            .collect(),
+                    });
                 }
             }
         } else {
             panic!("Target path is neither a file nor a directory");
         }
 
-        let chunk_size = 2u64 << (piece_size - 1);
+        let chunk_size: u64 = 1 << piece_size;
         let mut buffer_length: u64 = 0;
         let mut pieces: Vec<u8> = Vec::new();
         let mut piece_count: u64 = 0;
         let mut piece_bytes: Vec<u8> = Vec::new();
-        let mut tr_files: Vec<TrFile> = Vec::new();
-        for file in &file_list {
-            let file_path = if single_file {
-                base_path.to_path_buf()
-            } else {
-                base_path.join(file)
-            };
-            let file_metadata = fs::metadata(&file_path).unwrap();
-            let file_length = file_metadata.len();
-            let tr_file_path: Vec<String> = file
-                .split(path::MAIN_SEPARATOR)
-                .map(|s| s.to_string())
-                .collect();
-            tr_files.push(TrFile {
-                length: file_length,
-                path: tr_file_path,
-            });
 
+        for file_path in &file_list {
             let f = File::open(&file_path).unwrap();
             let mut reader = BufReader::new(f);
             loop {
@@ -164,7 +159,11 @@ impl TrInfo {
                         }
                     }
                     Ok(None) => break, // EOF
-                    Err(e) => panic!("Error reading file {}: {}", file, e),
+                    Err(e) => panic!(
+                        "Error reading file {}: {}",
+                        file_path.to_str().unwrap().to_string(),
+                        e
+                    ),
                 }
             }
         }
@@ -206,7 +205,7 @@ impl TrInfo {
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
-        if !self.files.is_none() {
+        if self.files.is_some() {
             bcode.extend(bencode_string("files"));
             bcode.extend(bencode_file_list(&self.files.as_ref().unwrap()));
         }
@@ -224,7 +223,7 @@ impl TrInfo {
             bcode.extend(bencode_string("pieces"));
             bcode.extend(bencode_bytes(&self.pieces));
         }
-        if !self.private {
+        if self.private {
             bcode.extend(bencode_string("private"));
             bcode.extend(bencode_integer(1));
         }
