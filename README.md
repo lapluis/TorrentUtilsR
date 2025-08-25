@@ -5,7 +5,8 @@ A utility for working with torrent files based on Rust.
 ### TODO List
 
 - [x] Create
-- [ ] Show Info
-- [ ] Verify
+- [x] Read
+  - [ ] Show Info
+  - [ ] Verify
 - [ ] Preformance
 - [ ] CLI

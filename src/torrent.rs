@@ -1,7 +1,7 @@
-use hex;
 use sha1::{Digest, Sha1};
 use std::cmp::min;
-use std::fs::{File, metadata};
+use std::collections::HashMap;
+use std::fs::{File, metadata, read};
 use std::io::{Read, Result, Write};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use walkdir::WalkDir;
@@ -287,6 +287,243 @@ impl Torrent {
         };
 
         torrent
+    }
+
+    pub fn read_torrent(tr_path: String) -> Self {
+        let bcode: Vec<u8> = read(tr_path.clone()).expect("failed to read file");
+        let bcode_len: usize = bcode.len();
+
+        enum Bencode {
+            Int(i64),
+            Bytes(Vec<u8>),
+            List(Vec<Bencode>),
+            Dict(HashMap<String, Bencode>),
+        }
+
+        enum Frame {
+            List(Vec<Bencode>),
+            Dict(Vec<Bencode>),
+        }
+
+        fn push_value(stack: &mut Vec<Frame>, root: &mut Option<Bencode>, val: Bencode) {
+            if let Some(top) = stack.last_mut() {
+                match top {
+                    Frame::List(items) | Frame::Dict(items) => items.push(val),
+                }
+            } else {
+                if root.is_none() {
+                    *root = Some(val);
+                } else {
+                    panic!("Malformed input (multiple roots)");
+                }
+            }
+        }
+
+        let mut stack: Vec<Frame> = Vec::new();
+        let mut tr_dict: Option<Bencode> = None;
+        let mut seek_pos: usize = 0;
+        while seek_pos < bcode_len {
+            match bcode[seek_pos] {
+                b'i' => {
+                    if let Some(end) = bcode[seek_pos + 1..].iter().position(|&c| c == b'e') {
+                        let j = seek_pos + 1 + end;
+                        let num_str = &bcode[seek_pos + 1..j];
+                        let num = std::str::from_utf8(num_str)
+                            .unwrap()
+                            .parse::<i64>()
+                            .unwrap();
+                        push_value(&mut stack, &mut tr_dict, Bencode::Int(num));
+                        seek_pos = j + 1;
+                    } else {
+                        panic!("Unterminated integer");
+                    }
+                }
+                b'l' => {
+                    stack.push(Frame::List(Vec::new()));
+                    seek_pos += 1;
+                }
+                b'd' => {
+                    stack.push(Frame::Dict(Vec::new()));
+                    seek_pos += 1;
+                }
+                b'e' => {
+                    let frame = stack.pop().expect("Unexpected end");
+                    let val = match frame {
+                        Frame::List(items) => Bencode::List(items),
+                        Frame::Dict(items) => {
+                            if items.len() % 2 != 0 {
+                                panic!("Malformed dict (odd items)");
+                            }
+                            let mut map = HashMap::new();
+                            let mut it = items.into_iter();
+                            while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                                match k {
+                                    Bencode::Bytes(key) => {
+                                        // convert key to str
+                                        map.insert(String::from_utf8(key).unwrap(), v);
+                                    }
+                                    _ => panic!("Dict key must be string"),
+                                }
+                            }
+                            Bencode::Dict(map)
+                        }
+                    };
+                    push_value(&mut stack, &mut tr_dict, val);
+                    seek_pos += 1;
+                }
+                b'0'..=b'9' => {
+                    if let Some(colon) = bcode[seek_pos..].iter().position(|&c| c == b':') {
+                        let j = seek_pos + colon;
+                        let len_str = &bcode[seek_pos..j];
+                        let length = std::str::from_utf8(len_str)
+                            .unwrap()
+                            .parse::<usize>()
+                            .unwrap();
+                        let start = j + 1;
+                        let end = start + length;
+                        if end > bcode_len {
+                            panic!("Truncated string");
+                        }
+                        let slice = bcode[start..end].to_vec();
+                        push_value(&mut stack, &mut tr_dict, Bencode::Bytes(slice));
+                        seek_pos = end;
+                    } else {
+                        panic!("Malformed string length");
+                    }
+                }
+                _ => panic!("Unknown token"),
+            }
+        }
+
+        if !stack.is_empty() {
+            panic!("Unterminated list/dict");
+        }
+
+        let tr_dict = match tr_dict.expect("Empty input") {
+            Bencode::Dict(m) => m,
+            _ => panic!("Torrent root is not a dictionary"),
+        };
+
+        let info_dict = match tr_dict.get(&String::from("info")).expect("Error info dict") {
+            Bencode::Dict(m) => m,
+            _ => panic!("Torrent info is not a dictionary"),
+        };
+
+        let tr_file_list: Vec<TrFile> = match info_dict.get("files") {
+            Some(Bencode::List(files)) => {
+                let mut tr_files: Vec<TrFile> = Vec::new();
+                for file in files {
+                    let file = match file {
+                        Bencode::Dict(m) => m,
+                        _ => panic!("File entry is not a dictionary"),
+                    };
+                    tr_files.push(TrFile {
+                        length: match file.get("length") {
+                            Some(Bencode::Int(i)) => *i as u64,
+                            _ => panic!("File length is not an integer"),
+                        },
+                        path: match file.get("path") {
+                            Some(Bencode::List(p)) => {
+                                let mut path_parts: Vec<String> = Vec::new();
+                                for part in p {
+                                    match part {
+                                        Bencode::Bytes(b) => {
+                                            path_parts.push(String::from_utf8(b.clone()).unwrap())
+                                        }
+                                        _ => panic!("Path part is not a string"),
+                                    }
+                                }
+                                path_parts
+                            }
+                            _ => panic!("File path is not a list"),
+                        },
+                    });
+                }
+                tr_files
+            }
+            _ => Vec::new(), // Not a multi-file torrent
+        };
+
+        let tr_info = TrInfo {
+            files: if !tr_file_list.is_empty() {
+                Some(tr_file_list)
+            } else {
+                None
+            },
+            length: match info_dict.get("length") {
+                Some(Bencode::Int(i)) => Some(*i as u64),
+                _ => None,
+            },
+            name: match info_dict.get("name") {
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                _ => None,
+            },
+            piece_length: match info_dict.get("piece length") {
+                Some(Bencode::Int(i)) => *i as u64,
+                _ => panic!("Piece length is not an integer"),
+            },
+            pieces: match info_dict.get("pieces") {
+                Some(Bencode::Bytes(b)) => b.clone(),
+                _ => panic!("Pieces is not a byte string"),
+            },
+            private: match info_dict.get("private") {
+                Some(Bencode::Int(i)) => *i != 0,
+                _ => false,
+            },
+        };
+
+        Torrent {
+            torrent_path: tr_path,
+            announce: match tr_dict.get("announce") {
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                _ => None,
+            },
+            announce_list: match tr_dict.get("announce-list") {
+                Some(Bencode::List(lists)) => {
+                    let mut alist: Vec<Vec<String>> = Vec::new();
+                    for tier in lists {
+                        match tier {
+                            Bencode::List(urls) => {
+                                let mut tier_list: Vec<String> = Vec::new();
+                                for url in urls {
+                                    match url {
+                                        Bencode::Bytes(b) => {
+                                            tier_list.push(String::from_utf8(b.clone()).unwrap())
+                                        }
+                                        _ => panic!("Announce URL is not a string"),
+                                    }
+                                }
+                                alist.push(tier_list);
+                            }
+                            _ => panic!("Announce tier is not a list"),
+                        }
+                    }
+                    Some(alist)
+                }
+                _ => None,
+            },
+            comment: match tr_dict.get("comment") {
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                _ => None,
+            },
+            created_by: match tr_dict.get("created by") {
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                _ => None,
+            },
+            creation_date: match tr_dict.get("creation date") {
+                Some(Bencode::Int(i)) => Some(*i as u64),
+                _ => None,
+            },
+            encoding: match tr_dict.get("encoding") {
+                Some(Bencode::Bytes(b)) => String::from_utf8(b.clone()).unwrap(),
+                _ => String::new(),
+            },
+            hash: match tr_dict.get("hash") {
+                Some(Bencode::Bytes(b)) => String::from_utf8(b.clone()).unwrap(),
+                _ => String::new(),
+            },
+            info: tr_info,
+        }
     }
 
     fn bencode(&self) -> Vec<u8> {
