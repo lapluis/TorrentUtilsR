@@ -2,7 +2,7 @@ use sha1::{Digest, Sha1};
 use std::cmp::min;
 use std::collections::HashMap;
 use std::fs::{File, metadata, read};
-use std::io::{Read, Result, Write};
+use std::io::{Read, Write};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -21,9 +21,6 @@ struct TrInfo {
 }
 
 pub struct Torrent {
-    torrent_path: String,
-    // target_path: Option<String>,
-    // piece_size: u64,
     announce: Option<String>,
     announce_list: Option<Vec<Vec<String>>>,
     comment: Option<String>,
@@ -170,7 +167,10 @@ impl TrInfo {
             piece_count += 1;
         }
 
-        println!("Total pieces: {piece_count}");
+        #[cfg(debug_assertions)]
+        {
+            println!("Total pieces: {piece_count}");
+        }
 
         TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
@@ -223,60 +223,33 @@ impl TrInfo {
     }
 }
 
-pub enum ProcessMode {
-    Create,
-    Verify,
-    // ShowInfo,
+pub struct TorrentInfo {
+    pub target_path: String,
+    pub piece_size: u64,
+    pub private: bool,
+    pub encoding: String,
+    pub announce: Option<String>,
+    pub announce_list: Option<Vec<Vec<String>>>,
+    pub created_by: String,
+    pub creation_date: u64,
+    pub comment: Option<String>,
 }
 
 impl Torrent {
-    pub fn new(
-        torrent_path: String,
-        target_path: Option<String>,
-        piece_size: Option<u64>,
-        process_mode: ProcessMode,
-
-        announce_list: Option<Vec<String>>,
-        comment: Option<String>,
-        creation_date: Option<u64>,
-        created_by: Option<String>,
-        private: bool,
-        encoding: String,
-    ) -> Self {
-        let announce = announce_list.as_ref().map(|v| v[0].clone());
-
-        let piece_size = piece_size.unwrap_or(16);
-
-        let announce_list = if announce_list.is_some() {
-            let mut alist: Vec<Vec<String>> = Vec::new();
-            for url in announce_list.as_ref().unwrap() {
-                alist.push(vec![url.clone()]);
-            }
-            Some(alist)
-        } else {
-            None
-        };
-
-        let info = match process_mode {
-            ProcessMode::Create => {
-                if target_path.is_none() {
-                    panic!("Target path is required for creating a torrent");
-                }
-                TrInfo::new(target_path.clone().unwrap(), piece_size, private)
-            }
-            ProcessMode::Verify => None.unwrap(), // TODO: implement verify mode
-        };
+    pub fn create_torrent(torrent_info: TorrentInfo) -> Self {
+        let info = TrInfo::new(
+            torrent_info.target_path,
+            torrent_info.piece_size,
+            torrent_info.private,
+        );
 
         Torrent {
-            torrent_path,
-            // target_path,
-            // piece_size: piece_size,
-            announce,
-            announce_list,
-            comment,
-            created_by,
-            creation_date,
-            encoding,
+            announce: torrent_info.announce,
+            announce_list: torrent_info.announce_list,
+            comment: torrent_info.comment,
+            created_by: Some(torrent_info.created_by),
+            creation_date: Some(torrent_info.creation_date),
+            encoding: torrent_info.encoding,
             hash: info.hash(),
             info,
         }
@@ -520,8 +493,8 @@ impl Torrent {
         bcode
     }
 
-    pub fn write_to_file(&self) -> Result<()> {
-        let mut file = File::create(&self.torrent_path)?;
+    pub fn write_to_file(&self, torrent_path: String) -> std::io::Result<()> {
+        let mut file = File::create(torrent_path)?;
         file.write_all(&self.bencode())?;
         Ok(())
     }

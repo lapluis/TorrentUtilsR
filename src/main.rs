@@ -5,7 +5,7 @@ mod torrent;
 #[derive(Parser, Debug)]
 #[command(name = env!("CARGO_PKG_NAME"))]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "A utility for working with torrent files", long_about = None)]
+#[command(about = "A utility for working with torrent files.", long_about = None)]
 struct Args {
     /// Torrent/Target Path or Both
     input: Option<Vec<String>>,
@@ -22,76 +22,87 @@ struct Args {
     #[arg(short = 'p', long)]
     private: bool,
 
+    /// Comment
+    #[arg(short = 'c', long)]
+    comment: Option<String>,
+
     /// Force overwrite
     #[arg(short = 'f', long)]
     force: bool,
 }
 
+enum ProcessMode {
+    Create,
+    Read,
+}
+
 fn main() {
     let args = Args::parse();
 
-    // print args for debugging
-    println!("{args:?}");
+    #[cfg(debug_assertions)]
+    {
+        println!("{args:?}");
+    }
 
-    // if only give on input, treat it according to its extension
     let (torrent_path, target_path, process_mode) = match args.input {
         Some(ref inputs) if inputs.len() == 1 => {
             let input = &inputs[0];
             if input.ends_with(".torrent") {
-                (
-                    input.clone(),
-                    String::from("None"),
-                    torrent::ProcessMode::Verify,
-                )
+                (input.clone(), String::from("None"), ProcessMode::Read)
             } else {
                 (
                     format!("{}.torrent", input.clone()),
                     input.clone(),
-                    torrent::ProcessMode::Create,
+                    ProcessMode::Create,
                 )
             }
         }
         Some(ref _inputs) => (
             String::from("None"),
             String::from("None"),
-            torrent::ProcessMode::Create,
+            ProcessMode::Create,
         ),
         None => (
             String::from("None"),
             String::from("None"),
-            torrent::ProcessMode::Create,
+            ProcessMode::Create,
         ),
     };
 
-    let piece_size = args.piece_size;
-    let announce_list = args.announce.clone().unwrap_or_default();
-
     match process_mode {
-        torrent::ProcessMode::Create => {
-            // pass
-            let torrent = torrent::Torrent::new(
-                torrent_path,
-                Some(target_path),
-                Some(piece_size as u64),
-                process_mode,
-                Some(announce_list),
-                None,
-                Some(chrono::Local::now().timestamp() as u64),
-                Some(format!(
-                    "{} {}",
-                    env!("CARGO_PKG_NAME"),
-                    env!("CARGO_PKG_VERSION")
-                )),
-                args.private,
-                String::from("UTF-8"),
-            );
+        ProcessMode::Create => {
+            let announce_list = match args.announce {
+                Some(ref urls) if !urls.is_empty() => vec![urls.clone()],
+                _ => Vec::new(),
+            };
+
+            let torrent = torrent::Torrent::create_torrent(torrent::TorrentInfo {
+                target_path,
+                piece_size: args.piece_size as u64,
+                private: args.private,
+                encoding: String::from("UTF-8"),
+                announce: if announce_list.is_empty() {
+                    None
+                } else {
+                    Some(announce_list[0][0].clone())
+                },
+                announce_list: if announce_list.is_empty() {
+                    None
+                } else {
+                    Some(announce_list)
+                },
+                created_by: format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+                creation_date: chrono::offset::Utc::now().timestamp() as u64,
+                comment: args.comment,
+            });
 
             torrent
-                .write_to_file()
+                .write_to_file(torrent_path)
                 .expect("Failed to write torrent file");
         }
-        torrent::ProcessMode::Verify => {
-            // pass
+        ProcessMode::Read => {
+            let _torrent = torrent::Torrent::read_torrent(torrent_path.clone()).unwrap();
+            // TODO
         }
     };
 }
