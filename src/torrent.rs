@@ -282,180 +282,141 @@ impl Torrent {
         }
     }
 
-    pub fn read_torrent(tr_path: String) -> Self {
-        let bcode: Vec<u8> = read(tr_path.clone()).expect("failed to read file");
-        let bcode_len: usize = bcode.len();
-
-        enum Bencode {
+    pub fn read_torrent(tr_path: String) -> Result<Self, String> {
+        enum Bencode<'a> {
             Int(i64),
-            Bytes(Vec<u8>),
-            List(Vec<Bencode>),
-            Dict(HashMap<String, Bencode>),
+            Bytes(&'a [u8]),
+            List(Vec<Bencode<'a>>),
+            Dict(HashMap<String, Bencode<'a>>),
         }
 
-        enum Frame {
-            List(Vec<Bencode>),
-            Dict(Vec<Bencode>),
-        }
+        let bcode = read(&tr_path).map_err(|e| format!("failed to read file: {e}"))?;
+        let mut pos = 0;
 
-        fn push_value(stack: &mut [Frame], root: &mut Option<Bencode>, val: Bencode) {
-            if let Some(top) = stack.last_mut() {
-                match top {
-                    Frame::List(items) | Frame::Dict(items) => items.push(val),
+        fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> Result<Bencode<'a>, String> {
+            match data.get(*pos) {
+                Some(b'i') => {
+                    *pos += 1;
+                    let start = *pos;
+                    while *pos < data.len() && data[*pos] != b'e' {
+                        *pos += 1;
+                    }
+                    if *pos >= data.len() {
+                        return Err("unterminated integer".into());
+                    }
+                    let num_str = std::str::from_utf8(&data[start..*pos])
+                        .map_err(|_| "invalid utf8 in int")?;
+                    let val = num_str.parse::<i64>().map_err(|_| "invalid int")?;
+                    *pos += 1;
+                    Ok(Bencode::Int(val))
                 }
-            } else if root.is_none() {
-                *root = Some(val);
-            } else {
-                panic!("Malformed input (multiple roots)");
+                Some(b'l') => {
+                    *pos += 1;
+                    let mut items = Vec::new();
+                    while data.get(*pos) != Some(&b'e') {
+                        items.push(parse_bencode(data, pos)?);
+                    }
+                    *pos += 1;
+                    Ok(Bencode::List(items))
+                }
+                Some(b'd') => {
+                    *pos += 1;
+                    let mut map = HashMap::new();
+                    while data.get(*pos) != Some(&b'e') {
+                        let key = match parse_bencode(data, pos)? {
+                            Bencode::Bytes(b) => {
+                                String::from_utf8(b.to_vec()).map_err(|_| "invalid utf8 key")?
+                            }
+                            _ => return Err("dict key not string".into()),
+                        };
+                        let val = parse_bencode(data, pos)?;
+                        map.insert(key, val);
+                    }
+                    *pos += 1;
+                    Ok(Bencode::Dict(map))
+                }
+                Some(b'0'..=b'9') => {
+                    let start = *pos;
+                    while *pos < data.len() && data[*pos] != b':' {
+                        *pos += 1;
+                    }
+                    if *pos >= data.len() {
+                        return Err("truncated string length".into());
+                    }
+                    let len_str = std::str::from_utf8(&data[start..*pos])
+                        .map_err(|_| "invalid utf8 length")?;
+                    let len = len_str.parse::<usize>().map_err(|_| "bad string length")?;
+                    *pos += 1;
+                    let end = *pos + len;
+                    if end > data.len() {
+                        return Err("truncated string".into());
+                    }
+                    let slice = &data[*pos..end];
+                    *pos = end;
+                    Ok(Bencode::Bytes(slice))
+                }
+                Some(_) => Err("unknown token".into()),
+                None => Err("unexpected EOF".into()),
             }
         }
 
-        let mut stack: Vec<Frame> = Vec::new();
-        let mut tr_dict: Option<Bencode> = None;
-        let mut seek_pos: usize = 0;
-        while seek_pos < bcode_len {
-            match bcode[seek_pos] {
-                b'i' => {
-                    if let Some(end) = bcode[seek_pos + 1..].iter().position(|&c| c == b'e') {
-                        let j = seek_pos + 1 + end;
-                        let num_str = &bcode[seek_pos + 1..j];
-                        let num = std::str::from_utf8(num_str)
-                            .unwrap()
-                            .parse::<i64>()
-                            .unwrap();
-                        push_value(&mut stack, &mut tr_dict, Bencode::Int(num));
-                        seek_pos = j + 1;
-                    } else {
-                        panic!("Unterminated integer");
-                    }
-                }
-                b'l' => {
-                    stack.push(Frame::List(Vec::new()));
-                    seek_pos += 1;
-                }
-                b'd' => {
-                    stack.push(Frame::Dict(Vec::new()));
-                    seek_pos += 1;
-                }
-                b'e' => {
-                    let frame = stack.pop().expect("Unexpected end");
-                    let val = match frame {
-                        Frame::List(items) => Bencode::List(items),
-                        Frame::Dict(items) => {
-                            if items.len() % 2 != 0 {
-                                panic!("Malformed dict (odd items)");
-                            }
-                            let mut map = HashMap::new();
-                            let mut it = items.into_iter();
-                            while let (Some(k), Some(v)) = (it.next(), it.next()) {
-                                match k {
-                                    Bencode::Bytes(key) => {
-                                        // convert key to str
-                                        map.insert(String::from_utf8(key).unwrap(), v);
-                                    }
-                                    _ => panic!("Dict key must be string"),
-                                }
-                            }
-                            Bencode::Dict(map)
-                        }
-                    };
-                    push_value(&mut stack, &mut tr_dict, val);
-                    seek_pos += 1;
-                }
-                b'0'..=b'9' => {
-                    if let Some(colon) = bcode[seek_pos..].iter().position(|&c| c == b':') {
-                        let j = seek_pos + colon;
-                        let len_str = &bcode[seek_pos..j];
-                        let length = std::str::from_utf8(len_str)
-                            .unwrap()
-                            .parse::<usize>()
-                            .unwrap();
-                        let start = j + 1;
-                        let end = start + length;
-                        if end > bcode_len {
-                            panic!("Truncated string");
-                        }
-                        let slice = bcode[start..end].to_vec();
-                        push_value(&mut stack, &mut tr_dict, Bencode::Bytes(slice));
-                        seek_pos = end;
-                    } else {
-                        panic!("Malformed string length");
-                    }
-                }
-                _ => panic!("Unknown token"),
-            }
-        }
-
-        if !stack.is_empty() {
-            panic!("Unterminated list/dict");
-        }
-
-        let tr_dict = match tr_dict.expect("Empty input") {
+        let root = parse_bencode(&bcode, &mut pos)?;
+        let tr_dict = match root {
             Bencode::Dict(m) => m,
-            _ => panic!("Torrent root is not a dictionary"),
+            _ => return Err("torrent root is not a dictionary".into()),
         };
 
-        let info_dict = match tr_dict.get(&String::from("info")).expect("Error info dict") {
-            Bencode::Dict(m) => m,
-            _ => panic!("Torrent info is not a dictionary"),
+        let info_dict = match tr_dict.get("info") {
+            Some(Bencode::Dict(m)) => m,
+            _ => return Err("missing info dict".into()),
         };
 
-        let tr_file_list: Vec<TrFile> = match info_dict.get("files") {
+        let tr_files = match info_dict.get("files") {
             Some(Bencode::List(files)) => {
-                let mut tr_files: Vec<TrFile> = Vec::new();
+                let mut out = Vec::new();
                 for file in files {
-                    let file = match file {
-                        Bencode::Dict(m) => m,
-                        _ => panic!("File entry is not a dictionary"),
-                    };
-                    tr_files.push(TrFile {
-                        length: match file.get("length") {
+                    if let Bencode::Dict(m) = file {
+                        let length = match m.get("length") {
                             Some(Bencode::Int(i)) => *i as u64,
-                            _ => panic!("File length is not an integer"),
-                        },
-                        path: match file.get("path") {
-                            Some(Bencode::List(p)) => {
-                                let mut path_parts: Vec<String> = Vec::new();
-                                for part in p {
-                                    match part {
-                                        Bencode::Bytes(b) => {
-                                            path_parts.push(String::from_utf8(b.clone()).unwrap())
-                                        }
-                                        _ => panic!("Path part is not a string"),
+                            _ => return Err("file length invalid".into()),
+                        };
+                        let path = match m.get("path") {
+                            Some(Bencode::List(parts)) => {
+                                let mut ps = Vec::new();
+                                for part in parts {
+                                    if let Bencode::Bytes(b) = part {
+                                        ps.push(String::from_utf8(b.to_vec()).unwrap());
                                     }
                                 }
-                                path_parts
+                                ps
                             }
-                            _ => panic!("File path is not a list"),
-                        },
-                    });
+                            _ => return Err("file path invalid".into()),
+                        };
+                        out.push(TrFile { length, path });
+                    }
                 }
-                tr_files
+                Some(out)
             }
-            _ => Vec::new(), // Not a multi-file torrent
+            _ => None,
         };
 
         let tr_info = TrInfo {
-            files: if !tr_file_list.is_empty() {
-                Some(tr_file_list)
-            } else {
-                None
-            },
+            files: tr_files,
             length: match info_dict.get("length") {
                 Some(Bencode::Int(i)) => Some(*i as u64),
                 _ => None,
             },
             name: match info_dict.get("name") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
                 _ => None,
             },
             piece_length: match info_dict.get("piece length") {
                 Some(Bencode::Int(i)) => *i as u64,
-                _ => panic!("Piece length is not an integer"),
+                _ => return Err("piece length missing".into()),
             },
             pieces: match info_dict.get("pieces") {
-                Some(Bencode::Bytes(b)) => b.clone(),
-                _ => panic!("Pieces is not a byte string"),
+                Some(Bencode::Bytes(b)) => b.to_vec(),
+                _ => return Err("pieces missing".into()),
             },
             private: match info_dict.get("private") {
                 Some(Bencode::Int(i)) => *i != 0,
@@ -463,10 +424,9 @@ impl Torrent {
             },
         };
 
-        Torrent {
-            torrent_path: tr_path,
+        Ok(Torrent {
             announce: match tr_dict.get("announce") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
                 _ => None,
             },
             announce_list: match tr_dict.get("announce-list") {
@@ -479,14 +439,14 @@ impl Torrent {
                                 for url in urls {
                                     match url {
                                         Bencode::Bytes(b) => {
-                                            tier_list.push(String::from_utf8(b.clone()).unwrap())
+                                            tier_list.push(String::from_utf8(b.to_vec()).unwrap())
                                         }
-                                        _ => panic!("Announce URL is not a string"),
+                                        _ => return Err("Announce URL is not a string".into()),
                                     }
                                 }
                                 alist.push(tier_list);
                             }
-                            _ => panic!("Announce tier is not a list"),
+                            _ => return Err("Announce tier is not a list".into()),
                         }
                     }
                     Some(alist)
@@ -494,11 +454,11 @@ impl Torrent {
                 _ => None,
             },
             comment: match tr_dict.get("comment") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
                 _ => None,
             },
             created_by: match tr_dict.get("created by") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.clone()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
                 _ => None,
             },
             creation_date: match tr_dict.get("creation date") {
@@ -506,15 +466,15 @@ impl Torrent {
                 _ => None,
             },
             encoding: match tr_dict.get("encoding") {
-                Some(Bencode::Bytes(b)) => String::from_utf8(b.clone()).unwrap(),
+                Some(Bencode::Bytes(b)) => String::from_utf8(b.to_vec()).unwrap(),
                 _ => String::new(),
             },
             hash: match tr_dict.get("hash") {
-                Some(Bencode::Bytes(b)) => String::from_utf8(b.clone()).unwrap(),
+                Some(Bencode::Bytes(b)) => String::from_utf8(b.to_vec()).unwrap(),
                 _ => String::new(),
             },
             info: tr_info,
-        }
+        })
     }
 
     fn bencode(&self) -> Vec<u8> {
