@@ -64,7 +64,7 @@ fn bencode_string_list(list: &Vec<String>) -> Vec<u8> {
     let mut bcode: Vec<u8> = Vec::new();
     bcode.push(b'l');
     for item in list {
-        bcode.extend(bencode_string(&item));
+        bcode.extend(bencode_string(item));
     }
     bcode.push(b'e');
     bcode
@@ -113,16 +113,15 @@ impl TrInfo {
                 if entry.file_type().is_file() {
                     file_list.push(entry.path().to_path_buf());
                     tr_files.push(TrFile {
-                        length: metadata(&entry.path()).unwrap().len(),
+                        length: metadata(entry.path()).unwrap().len(),
                         path: entry
                             .path()
                             .strip_prefix(base_path)
                             .unwrap()
                             .to_str()
                             .unwrap()
-                            .to_string()
                             .split(MAIN_SEPARATOR)
-                            .map(|s| s.to_string())
+                            .map(str::to_owned)
                             .collect(),
                     });
                 }
@@ -171,7 +170,7 @@ impl TrInfo {
             piece_count += 1;
         }
 
-        println!("Total pieces: {}", piece_count);
+        println!("Total pieces: {piece_count}");
 
         TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
@@ -192,15 +191,15 @@ impl TrInfo {
         bcode.push(b'd');
         if self.files.is_some() {
             bcode.extend(bencode_string("files"));
-            bcode.extend(bencode_file_list(&self.files.as_ref().unwrap()));
+            bcode.extend(bencode_file_list(self.files.as_ref().unwrap()));
         }
-        if !self.length.is_none() {
+        if self.length.is_some() {
             bcode.extend(bencode_string("length"));
             bcode.extend(bencode_integer(self.length.unwrap()));
         }
-        if !self.name.is_none() {
+        if self.name.is_some() {
             bcode.extend(bencode_string("name"));
-            bcode.extend(bencode_string(&self.name.as_ref().unwrap()));
+            bcode.extend(bencode_string(self.name.as_ref().unwrap()));
         }
         bcode.extend(bencode_string("piece length"));
         bcode.extend(bencode_integer(self.piece_length));
@@ -218,7 +217,7 @@ impl TrInfo {
 
     fn hash(&self) -> String {
         let mut hasher = Sha1::new();
-        hasher.update(&self.bencode());
+        hasher.update(self.bencode());
         let result = hasher.finalize();
         hex::encode(result)
     }
@@ -244,15 +243,11 @@ impl Torrent {
         private: bool,
         encoding: String,
     ) -> Self {
-        let announce = if !announce_list.is_none() {
-            Some(announce_list.as_ref().unwrap()[0].clone())
-        } else {
-            None
-        };
+        let announce = announce_list.as_ref().map(|v| v[0].clone());
 
-        let piece_size = piece_size.or(Some(16)).unwrap();
+        let piece_size = piece_size.unwrap_or(16);
 
-        let announce_list = if !announce_list.is_none() {
+        let announce_list = if announce_list.is_some() {
             let mut alist: Vec<Vec<String>> = Vec::new();
             for url in announce_list.as_ref().unwrap() {
                 alist.push(vec![url.clone()]);
@@ -272,7 +267,7 @@ impl Torrent {
             ProcessMode::Verify => None.unwrap(), // TODO: implement verify mode
         };
 
-        let torrent = Torrent {
+        Torrent {
             torrent_path,
             // target_path,
             // piece_size: piece_size,
@@ -284,9 +279,7 @@ impl Torrent {
             encoding,
             hash: info.hash(),
             info,
-        };
-
-        torrent
+        }
     }
 
     pub fn read_torrent(tr_path: String) -> Self {
@@ -305,17 +298,15 @@ impl Torrent {
             Dict(Vec<Bencode>),
         }
 
-        fn push_value(stack: &mut Vec<Frame>, root: &mut Option<Bencode>, val: Bencode) {
+        fn push_value(stack: &mut [Frame], root: &mut Option<Bencode>, val: Bencode) {
             if let Some(top) = stack.last_mut() {
                 match top {
                     Frame::List(items) | Frame::Dict(items) => items.push(val),
                 }
+            } else if root.is_none() {
+                *root = Some(val);
             } else {
-                if root.is_none() {
-                    *root = Some(val);
-                } else {
-                    panic!("Malformed input (multiple roots)");
-                }
+                panic!("Malformed input (multiple roots)");
             }
         }
 
@@ -529,11 +520,11 @@ impl Torrent {
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
-        if !self.announce.is_none() {
+        if self.announce.is_some() {
             bcode.extend(bencode_string("announce"));
-            bcode.extend(bencode_string(&self.announce.as_ref().unwrap()));
+            bcode.extend(bencode_string(self.announce.as_ref().unwrap()));
         }
-        if !self.announce_list.is_none() {
+        if self.announce_list.is_some() {
             bcode.extend(bencode_string("announce-list"));
             bcode.push(b'l');
             for tier in self.announce_list.as_ref().unwrap() {
@@ -545,13 +536,13 @@ impl Torrent {
             }
             bcode.push(b'e');
         }
-        if !self.comment.is_none() {
+        if self.comment.is_some() {
             bcode.extend(bencode_string("comment"));
-            bcode.extend(bencode_string(&self.comment.as_ref().unwrap()));
+            bcode.extend(bencode_string(self.comment.as_ref().unwrap()));
         }
-        if !self.created_by.is_none() {
+        if self.created_by.is_some() {
             bcode.extend(bencode_string("created by"));
-            bcode.extend(bencode_string(&self.created_by.as_ref().unwrap()));
+            bcode.extend(bencode_string(self.created_by.as_ref().unwrap()));
         }
         if self.creation_date.is_none() {
             bcode.extend(bencode_string("creation date"));

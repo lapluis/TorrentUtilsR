@@ -1,4 +1,3 @@
-use chrono;
 use clap::Parser;
 
 mod torrent;
@@ -32,7 +31,7 @@ fn main() {
     let args = Args::parse();
 
     // print args for debugging
-    println!("{:?}", args);
+    println!("{args:?}");
 
     // if only give on input, treat it according to its extension
     let (torrent_path, target_path, process_mode) = match args.input {
@@ -64,7 +63,7 @@ fn main() {
         ),
     };
 
-    let piece_size = Some(args.piece_size).unwrap();
+    let piece_size = args.piece_size;
     let announce_list = args.announce.clone().unwrap_or_default();
 
     match process_mode {
