@@ -77,6 +77,55 @@ fn bencode_file_list(list: &[TrFile]) -> Vec<u8> {
     bcode
 }
 
+fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; 1 << 18]; // 256 KiB buffer
+    let mut piece_pos = 0usize;
+    let mut pieces = Vec::new();
+    let mut piece_count = 0u64;
+    let mut hasher = Sha1::new();
+
+    for tr_file in tr_files {
+        let rel_path: PathBuf = tr_file.path.iter().collect::<PathBuf>();
+        let mut f: File = File::open(base_path.join(rel_path)).unwrap();
+
+        loop {
+            let n = f.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+
+            let mut buf_pos = 0;
+            while buf_pos < n {
+                let space = chunk_size - piece_pos;
+                let to_copy = min(space, n - buf_pos);
+
+                hasher.update(&buf[buf_pos..buf_pos + to_copy]);
+
+                piece_pos += to_copy;
+                buf_pos += to_copy;
+
+                if piece_pos == chunk_size {
+                    pieces.extend_from_slice(&hasher.finalize_reset());
+                    piece_count += 1;
+                    piece_pos = 0;
+                }
+            }
+        }
+    }
+
+    if piece_pos > 0 {
+        pieces.extend_from_slice(&hasher.finalize());
+        piece_count += 1;
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        println!("Total pieces: {piece_count}");
+    }
+
+    pieces
+}
+
 impl TrFile {
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
@@ -92,23 +141,18 @@ impl TrFile {
 
 impl TrInfo {
     fn new(target_path: String, piece_size: u64, private: bool) -> TrInfo {
-        // get target path name
         let base_path = Path::new(&target_path);
         let name = base_path.file_name().unwrap().to_str().unwrap();
-        let mut file_list: Vec<PathBuf> = Vec::new();
         let mut single_file = false;
 
-        // check if target path is file or directory
         let base_metadata = metadata(base_path).unwrap();
         let mut tr_files: Vec<TrFile> = Vec::new();
+
         if base_metadata.is_file() {
-            file_list.push(base_path.to_path_buf());
             single_file = true;
         } else if base_metadata.is_dir() {
-            // read directory recursively
             for entry in WalkDir::new(base_path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
-                    file_list.push(entry.path().to_path_buf());
                     tr_files.push(TrFile {
                         length: metadata(entry.path()).unwrap().len(),
                         path: entry
@@ -128,49 +172,7 @@ impl TrInfo {
         }
 
         let chunk_size: usize = 1 << piece_size;
-        let mut buf = vec![0u8; 1 << 18]; // 256 KiB buffer
-        let mut piece_pos = 0usize;
-        let mut pieces = Vec::new();
-        let mut piece_count = 0u64;
-        let mut hasher = Sha1::new();
-
-        for file_path in &file_list {
-            let mut f = File::open(file_path).unwrap();
-
-            loop {
-                let n = f.read(&mut buf).unwrap();
-                if n == 0 {
-                    break;
-                }
-
-                let mut buf_pos = 0;
-                while buf_pos < n {
-                    let space = chunk_size - piece_pos;
-                    let to_copy = min(space, n - buf_pos);
-
-                    hasher.update(&buf[buf_pos..buf_pos + to_copy]);
-
-                    piece_pos += to_copy;
-                    buf_pos += to_copy;
-
-                    if piece_pos == chunk_size {
-                        pieces.extend_from_slice(&hasher.finalize_reset());
-                        piece_count += 1;
-                        piece_pos = 0;
-                    }
-                }
-            }
-        }
-
-        if piece_pos > 0 {
-            pieces.extend_from_slice(&hasher.finalize());
-            piece_count += 1;
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            println!("Total pieces: {piece_count}");
-        }
+        let pieces = hash_pieces(base_path, &tr_files, chunk_size);
 
         TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
