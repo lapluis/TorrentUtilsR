@@ -100,8 +100,8 @@ fn main() {
                 .expect("Failed to write torrent file");
         }
         ProcessMode::Read => {
-            let _torrent = torrent::Torrent::read_torrent(torrent_path.clone()).unwrap();
-            // TODO
+            let torrent = torrent::Torrent::read_torrent(torrent_path.clone()).unwrap();
+            println!("{torrent}");
         }
     };
 }

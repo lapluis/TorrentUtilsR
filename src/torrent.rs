@@ -1,9 +1,11 @@
+use chrono::DateTime;
 use sha1::{Digest, Sha1};
 use std::cmp::min;
 use std::collections::HashMap;
-use std::fs::{File, metadata, read};
+use std::fmt;
+use std::fs::{metadata, read, File};
 use std::io::{Read, Write};
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use walkdir::WalkDir;
 
 struct TrFile {
@@ -497,6 +499,94 @@ impl Torrent {
     pub fn write_to_file(&self, torrent_path: String) -> std::io::Result<()> {
         let mut file = File::create(torrent_path)?;
         file.write_all(&self.bencode())?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for Torrent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let info = self.info.as_ref().unwrap();
+
+        writeln!(f, "Torrent Info:")?;
+        if let Some(name) = &info.name {
+            writeln!(f, "  Name: {name}")?;
+        }
+        if let Some(announce_list) = &self.announce_list {
+            writeln!(f, "  Announce List:")?;
+            let pad = if announce_list.len() >= 10 { 2 } else { 1 };
+            let mut shown = 0;
+            let mut truncated = false;
+            for (tier_id, tier) in announce_list.iter().enumerate() {
+                let tier_str = if pad == 2 {
+                    format!("{tier_id:02}")
+                } else {
+                    format!("{tier_id}")
+                };
+                for url in tier {
+                    if shown < 20 {
+                        writeln!(f, "    Tier {tier_str}: {url}")?;
+                        shown += 1;
+                    } else {
+                        truncated = true;
+                        break;
+                    }
+                }
+                if truncated {
+                    break;
+                }
+            }
+            if truncated {
+                writeln!(f, "    Truncated at 20 announces...")?;
+            }
+        }
+        if let Some(comment) = &self.comment {
+            writeln!(f, "  Comment: {comment}")?;
+        }
+        if let Some(created_by) = &self.created_by {
+            writeln!(f, "  Created by: {created_by}")?;
+        }
+        if let Some(date) = self.creation_date {
+            // let dt = Utc.timestamp_opt(date as i64, 0).single();
+            let dt = DateTime::from_timestamp(date as i64, 0);
+            if let Some(dt) = dt {
+                let dt = dt.format("%Y-%m-%d %H:%M:%S");
+                writeln!(f, "  Creation date: {date} [{dt}]")?;
+            } else {
+                writeln!(f, "  Creation date: {date} [invalid]")?;
+            }
+        }
+        if let Some(encoding) = &self.encoding {
+            writeln!(f, "  Encoding: {encoding}")?;
+        }
+        if let Some(hash) = &self.hash {
+            writeln!(f, "  Hash: {hash}")?;
+        }
+        writeln!(
+            f,
+            "  Piece length: {piece_length}",
+            piece_length = info.piece_length
+        )?;
+        writeln!(f, "  Private: {private}", private = info.private)?;
+        if let Some(files) = &info.files {
+            writeln!(f, "  Files (RelPath [Length]):")?;
+            let mut shown = 0;
+            let mut truncated = false;
+            for file in files {
+                if shown < 100 {
+                    let path_str = file.path.join("/");
+                    writeln!(f, "    - {path_str} [{length}]", length = file.length)?;
+                    shown += 1;
+                } else {
+                    truncated = true;
+                    break;
+                }
+            }
+            if truncated {
+                writeln!(f, "    Truncated at 100 files...")?;
+            }
+        } else if let Some(length) = info.length {
+            writeln!(f, "  Length: {length}")?;
+        }
         Ok(())
     }
 }
