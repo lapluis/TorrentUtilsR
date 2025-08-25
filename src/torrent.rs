@@ -87,8 +87,12 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<
     let mut hasher = Sha1::new();
 
     for tr_file in tr_files {
-        let rel_path: PathBuf = tr_file.path.iter().collect::<PathBuf>();
-        let mut f: File = File::open(base_path.join(rel_path)).unwrap();
+        let f_path = if tr_file.path.is_empty() {
+            base_path.to_path_buf()
+        } else {
+            base_path.join(tr_file.path.iter().collect::<PathBuf>())
+        };
+        let mut f: File = File::open(f_path).unwrap();
 
         loop {
             let n = f.read(&mut buf).unwrap();
@@ -152,6 +156,10 @@ impl TrInfo {
 
         if base_metadata.is_file() {
             single_file = true;
+            tr_files.push(TrFile {
+                length: base_metadata.len(),
+                path: Vec::new(),
+            });
         } else if base_metadata.is_dir() {
             for entry in WalkDir::new(base_path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
