@@ -26,9 +26,9 @@ pub struct Torrent {
     comment: Option<String>,
     created_by: Option<String>,
     creation_date: Option<u64>,
-    encoding: String,
-    hash: String,
-    info: TrInfo,
+    encoding: Option<String>,
+    hash: Option<String>,
+    info: Option<TrInfo>,
 }
 
 fn bencode_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -225,36 +225,31 @@ impl TrInfo {
     }
 }
 
-pub struct TorrentInfo {
-    pub target_path: String,
-    pub piece_size: u64,
-    pub private: bool,
-    pub encoding: String,
-    pub announce: Option<String>,
-    pub announce_list: Option<Vec<Vec<String>>>,
-    pub created_by: String,
-    pub creation_date: u64,
-    pub comment: Option<String>,
-}
-
 impl Torrent {
-    pub fn create_torrent(torrent_info: TorrentInfo) -> Self {
-        let info = TrInfo::new(
-            torrent_info.target_path,
-            torrent_info.piece_size,
-            torrent_info.private,
-        );
-
+    pub fn new(
+        announce: Option<String>,
+        announce_list: Option<Vec<Vec<String>>>,
+        comment: Option<String>,
+        created_by: Option<String>,
+        creation_date: Option<u64>,
+        encoding: Option<String>,
+    ) -> Self {
         Torrent {
-            announce: torrent_info.announce,
-            announce_list: torrent_info.announce_list,
-            comment: torrent_info.comment,
-            created_by: Some(torrent_info.created_by),
-            creation_date: Some(torrent_info.creation_date),
-            encoding: torrent_info.encoding,
-            hash: info.hash(),
-            info,
+            announce,
+            announce_list,
+            comment,
+            created_by,
+            creation_date,
+            encoding,
+            hash: None,
+            info: None,
         }
+    }
+
+    pub fn create_torrent(&mut self, target_path: String, piece_size: u64, private: bool) {
+        let info = TrInfo::new(target_path, piece_size, private);
+        self.hash = Some(info.hash());
+        self.info = Some(info);
     }
 
     pub fn read_torrent(tr_path: String) -> Result<Self, String> {
@@ -441,14 +436,14 @@ impl Torrent {
                 _ => None,
             },
             encoding: match tr_dict.get("encoding") {
-                Some(Bencode::Bytes(b)) => String::from_utf8(b.to_vec()).unwrap(),
-                _ => String::new(),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                _ => None,
             },
             hash: match tr_dict.get("hash") {
-                Some(Bencode::Bytes(b)) => String::from_utf8(b.to_vec()).unwrap(),
-                _ => String::new(),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                _ => None,
             },
-            info: tr_info,
+            info: Some(tr_info),
         })
     }
 
@@ -483,14 +478,18 @@ impl Torrent {
             bcode.extend(bencode_string("creation date"));
             bcode.extend(bencode_integer(self.creation_date.unwrap()));
         }
-        if !self.encoding.is_empty() {
+        if self.encoding.is_some() {
             bcode.extend(bencode_string("encoding"));
-            bcode.extend(bencode_string(&self.encoding));
+            bcode.extend(bencode_string(self.encoding.as_ref().unwrap()));
         }
-        bcode.extend(bencode_string("info"));
-        bcode.extend(self.info.bencode());
-        bcode.extend(bencode_string("hash"));
-        bcode.extend(bencode_string(&self.hash));
+        if self.info.is_some() {
+            bcode.extend(bencode_string("info"));
+            bcode.extend(self.info.as_ref().unwrap().bencode());
+        } // TODO: error if info is missing
+        if self.hash.is_some() {
+            bcode.extend(bencode_string("hash"));
+            bcode.extend(bencode_string(self.hash.as_ref().unwrap()));
+        }
         bcode.push(b'e');
         bcode
     }

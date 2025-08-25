@@ -76,25 +76,24 @@ fn main() {
                 _ => Vec::new(),
             };
 
-            let torrent = torrent::Torrent::create_torrent(torrent::TorrentInfo {
-                target_path,
-                piece_size: args.piece_size as u64,
-                private: args.private,
-                encoding: String::from("UTF-8"),
-                announce: if announce_list.is_empty() {
+            let mut torrent = torrent::Torrent::new(
+                if announce_list.is_empty() {
                     None
                 } else {
                     Some(announce_list[0][0].clone())
                 },
-                announce_list: if announce_list.is_empty() {
+                if announce_list.is_empty() {
                     None
                 } else {
                     Some(announce_list)
                 },
-                created_by: format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
-                creation_date: chrono::offset::Utc::now().timestamp() as u64,
-                comment: args.comment,
-            });
+                args.comment,
+                Some(format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))),
+                Some(chrono::offset::Utc::now().timestamp() as u64),
+                Some(String::from("UTF-8"))
+            );
+
+            torrent.create_torrent(target_path, args.piece_size as u64, args.private);
 
             torrent
                 .write_to_file(torrent_path)
