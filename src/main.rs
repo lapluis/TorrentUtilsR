@@ -27,7 +27,7 @@ struct Args {
     #[arg(short = 'g', long, default_value = "config.toml")]
     config: String,
 
-    /// Output Path (only for create mode)
+    /// Output Path or Torrent name (only for create mode)
     #[arg(short = 'o', long)]
     output: Option<String>,
 
@@ -90,7 +90,7 @@ fn main() {
                     .ok()
                     .and_then(|content| {
                         toml::from_str::<Config>(&content).ok().inspect(|_| {
-                            println!("Config loaded successfully");
+                            println!("Config loaded.");
                         })
                     })
                     .unwrap_or_else(|| Config {
@@ -136,7 +136,16 @@ fn main() {
                 let torrent_path = match args.output {
                     Some(ref path) => {
                         if path.ends_with(".torrent") {
-                            path.clone()
+                            let path_obj = std::path::Path::new(path);
+                            if path_obj.is_absolute() || path.contains(std::path::MAIN_SEPARATOR) {
+                                path.clone()
+                            } else {
+                                let target_path = std::path::Path::new(input);
+                                let parent_path = target_path
+                                    .parent()
+                                    .unwrap_or_else(|| std::path::Path::new("."));
+                                parent_path.join(path).to_string_lossy().to_string()
+                            }
                         } else {
                             eprint!("Error: Output path must end with .torrent");
                             process::exit(1);
