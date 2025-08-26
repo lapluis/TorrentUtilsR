@@ -5,7 +5,7 @@ use std::process;
 mod torrent;
 mod utils;
 
-const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes, 512 KiB
+const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes = 64 KiB
 
 #[derive(Debug, Deserialize)]
 struct Config {

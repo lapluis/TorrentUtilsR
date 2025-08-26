@@ -11,6 +11,11 @@ use walkdir::WalkDir;
 
 use crate::utils;
 
+const BUFFER_SIZE: usize = 1 << 18; // 256 KiB buffer
+const SHA1_HASH_SIZE: usize = 20;
+const MAX_DISPLAYED_ANNOUNCES: usize = 20;
+const MAX_DISPLAYED_FILES: usize = 100;
+
 #[derive(Debug)]
 pub enum TorrentError {
     Io(std::io::Error),
@@ -147,7 +152,7 @@ fn hash_pieces(
     chunk_size: usize,
     quiet: bool,
 ) -> Result<Vec<u8>> {
-    let mut buf = vec![0u8; 1 << 18]; // 256 KiB buffer
+    let mut buf = vec![0u8; BUFFER_SIZE];
     let mut piece_pos = 0usize;
     let mut pieces = Vec::new();
     let mut piece_count = 0u64;
@@ -245,11 +250,11 @@ fn hash_pieces(
     Ok(pieces)
 }
 
-fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; 20]> {
-    let layer_count = piece.len() / 20;
-    let mut slices: Vec<[u8; 20]> = vec![[0u8; 20]; layer_count];
+fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; SHA1_HASH_SIZE]> {
+    let layer_count = piece.len() / SHA1_HASH_SIZE;
+    let mut slices: Vec<[u8; SHA1_HASH_SIZE]> = vec![[0u8; SHA1_HASH_SIZE]; layer_count];
     for i in 0..layer_count {
-        slices[i].copy_from_slice(&piece[i * 20..(i + 1) * 20]);
+        slices[i].copy_from_slice(&piece[i * SHA1_HASH_SIZE..(i + 1) * SHA1_HASH_SIZE]);
     }
     slices
 }
@@ -390,7 +395,7 @@ impl TrInfo {
             }
         }
 
-        let piece_slices: Vec<[u8; 20]> = split_hash_pieces(&self.pieces);
+        let piece_slices: Vec<[u8; SHA1_HASH_SIZE]> = split_hash_pieces(&self.pieces);
         let mut file_status_map: HashMap<String, bool> = HashMap::new();
         let mut failed_files: HashSet<usize> = HashSet::new();
         let mut failed_files_know: HashSet<usize> = HashSet::new();
@@ -919,7 +924,7 @@ impl fmt::Display for Torrent {
                             format!("{tier_id}")
                         };
                         for url in tier {
-                            if shown < 20 {
+                            if shown < MAX_DISPLAYED_ANNOUNCES {
                                 writeln!(f, "    Tier {tier_str}: {url}")?;
                                 shown += 1;
                             } else {
@@ -932,7 +937,7 @@ impl fmt::Display for Torrent {
                         }
                     }
                     if truncated {
-                        writeln!(f, "    Truncated at 20 announces...")?;
+                        writeln!(f, "    Truncated at {MAX_DISPLAYED_ANNOUNCES} announces...")?;
                     }
                 }
 
@@ -969,7 +974,7 @@ impl fmt::Display for Torrent {
                     let mut shown = 0;
                     let mut truncated = false;
                     for file in files {
-                        if shown < 100 {
+                        if shown < MAX_DISPLAYED_FILES {
                             let path_str = file.path.join("/");
                             writeln!(
                                 f,
@@ -984,7 +989,7 @@ impl fmt::Display for Torrent {
                         }
                     }
                     if truncated {
-                        writeln!(f, "    Truncated at 100 files...")?;
+                        writeln!(f, "    Truncated at {MAX_DISPLAYED_FILES} files...")?;
                     }
                 } else if let Some(length) = info.length {
                     writeln!(f, "  Length: {length}")?;
