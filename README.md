@@ -7,6 +7,6 @@ A utility for working with torrent files based on Rust.
 - [x] Create
 - [x] Read
   - [x] Show Info
-  - [ ] Verify
+  - [x] Verify
 - [x] Preformance
-- [ ] CLI
+- [x] CLI

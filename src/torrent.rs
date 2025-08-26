@@ -1,11 +1,11 @@
 use chrono::DateTime;
 use sha1::{Digest, Sha1};
 use std::cmp::min;
-use std::collections::HashMap;
-use std::fmt;
-use std::fs::{metadata, read, File};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, metadata, read};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::{fmt, vec};
 use walkdir::WalkDir;
 
 struct TrFile {
@@ -13,7 +13,7 @@ struct TrFile {
     path: Vec<String>,
 }
 
-struct TrInfo {
+pub struct TrInfo {
     files: Option<Vec<TrFile>>,
     length: Option<u64>,
     name: Option<String>,
@@ -132,6 +132,15 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<
     pieces
 }
 
+fn fold_piece(piece: &[u8]) -> Vec<[u8; 20]> {
+    let layer_count = piece.len() / 20;
+    let mut folder: Vec<[u8; 20]> = vec![[0u8; 20]; layer_count];
+    for i in 0..layer_count {
+        folder[i].copy_from_slice(&piece[i * 20..(i + 1) * 20]);
+    }
+    folder
+}
+
 impl TrFile {
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
@@ -198,6 +207,155 @@ impl TrInfo {
         }
     }
 
+    pub fn verify(&self, target_path: String) {
+        let base_path = Path::new(&target_path);
+        let tr_files = match self.files {
+            Some(ref files) => files,
+            None => &vec![TrFile {
+                length: self.length.unwrap(),
+                path: Vec::new(),
+            }],
+        };
+
+        let mut piece_file_info: Vec<Vec<(usize, usize, usize)>> = Vec::new(); // piece_index -> [(file_index, file_offset, length), ...]
+        let mut file_offset = 0usize;
+        let mut pool_size = 0usize;
+
+        for (file_index, tr_file) in tr_files.iter().enumerate() {
+            pool_size += tr_file.length as usize;
+            if file_offset > 0 {
+                if let Some(last) = piece_file_info.last_mut() {
+                    if pool_size > self.piece_length as usize {
+                        last.push((file_index, 0, self.piece_length as usize - file_offset));
+                    } else if pool_size < self.piece_length as usize {
+                        last.push((file_index, 0, tr_file.length as usize));
+                        file_offset += tr_file.length as usize;
+                        continue;
+                    } else {
+                        last.push((file_index, 0, tr_file.length as usize));
+                        file_offset = 0;
+                        pool_size = 0;
+                        continue;
+                    }
+                }
+            }
+            let piece_count = (pool_size + file_offset) / self.piece_length as usize
+                - if file_offset > 0 { 1 } else { 0 };
+            let start_pos = (self.piece_length as usize - file_offset) % self.piece_length as usize;
+            for i in 0..piece_count {
+                piece_file_info.push(vec![(
+                    file_index,
+                    start_pos + self.piece_length as usize * i,
+                    self.piece_length as usize,
+                )]);
+            }
+            file_offset = pool_size % self.piece_length as usize;
+            if file_offset > 0 {
+                piece_file_info.push(vec![(
+                    file_index,
+                    start_pos + self.piece_length as usize * piece_count,
+                    file_offset,
+                )]);
+                pool_size = file_offset;
+            } else {
+                pool_size = 0;
+            }
+        }
+
+        let piece_folder: Vec<[u8; 20]> = fold_piece(&self.pieces);
+        let mut file_status_map: HashMap<String, bool> = HashMap::new();
+        let mut failed_files: HashSet<usize> = HashSet::new();
+        let mut failed_files_know: HashSet<usize> = HashSet::new();
+        let mut failed_pieces: HashSet<usize> = HashSet::new();
+
+        let mut hasher = Sha1::new();
+
+        for (i, piece_hash) in piece_folder.iter().enumerate() {
+            let mut files_ok: bool = true;
+            for (file_index, _, _) in &piece_file_info[i] {
+                let tr_file = &tr_files[*file_index];
+                let f_path = if tr_file.path.is_empty() {
+                    base_path.to_path_buf()
+                } else {
+                    base_path.join(tr_file.path.iter().collect::<PathBuf>())
+                };
+                let f_path_str = f_path.to_str().unwrap().to_string();
+                if !file_status_map.contains_key(&f_path_str) {
+                    let f_meta = metadata(&f_path);
+                    if f_meta.is_err() || f_meta.unwrap().len() != tr_file.length {
+                        file_status_map.insert(f_path_str.clone(), false);
+                        failed_files_know.insert(*file_index);
+                        files_ok = false;
+                    } else {
+                        file_status_map.insert(f_path_str.clone(), true);
+                    }
+                }
+            }
+            if !files_ok {
+                failed_pieces.insert(i);
+                for (file_index, _, _) in &piece_file_info[i] {
+                    failed_files.insert(*file_index);
+                }
+                continue;
+            }
+            for (file_index, file_offset, length) in &piece_file_info[i] {
+                let tr_file = &tr_files[*file_index];
+                let f_path = if tr_file.path.is_empty() {
+                    base_path.to_path_buf()
+                } else {
+                    base_path.join(tr_file.path.iter().collect::<PathBuf>())
+                };
+                let mut f: File = File::open(f_path).unwrap();
+                f.seek(SeekFrom::Start(*file_offset as u64)).unwrap();
+                let mut buf = vec![0u8; *length];
+                let n = f.read(&mut buf).unwrap();
+                if n != *length {
+                    buf.truncate(n);
+                }
+                hasher.update(&buf);
+            }
+            let calc_hash = hasher.finalize_reset();
+            if &calc_hash[..] != piece_hash {
+                files_ok = false;
+            }
+            if !files_ok {
+                failed_pieces.insert(i);
+                for (file_index, _, _) in &piece_file_info[i] {
+                    failed_files.insert(*file_index);
+                }
+            }
+        }
+
+        println!("Verification Result:");
+        if failed_files.is_empty() {
+            println!("All files are OK.");
+        } else {
+            println!("Some files failed verification:");
+            let mut failed_files: Vec<usize> = failed_files.iter().cloned().collect();
+            failed_files.sort();
+            for file_index in failed_files {
+                let tr_file = &tr_files[file_index];
+                let rel_path = if tr_file.path.is_empty() {
+                    self.name.as_ref().unwrap().to_string()
+                } else {
+                    tr_file.path.join("/")
+                };
+                let known_issue = if failed_files_know.contains(&file_index) {
+                    " [missing or size mismatch]"
+                } else {
+                    ""
+                };
+                println!("- {} ({} bytes){}", rel_path, tr_file.length, known_issue);
+            }
+            println!("\nFailed pieces:");
+            let mut failed_pieces: Vec<usize> = failed_pieces.iter().cloned().collect();
+            failed_pieces.sort();
+            for piece_index in &failed_pieces {
+                println!("- Piece {piece_index}");
+            }
+        }
+    }
+
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
@@ -260,6 +418,12 @@ impl Torrent {
         let info = TrInfo::new(target_path, piece_size, private);
         self.hash = Some(info.hash());
         self.info = Some(info);
+    }
+
+    pub fn write_to_file(&self, torrent_path: String) -> std::io::Result<()> {
+        let mut file = File::create(torrent_path)?;
+        file.write_all(&self.bencode())?;
+        Ok(())
     }
 
     pub fn read_torrent(tr_path: String) -> Result<Self, String> {
@@ -457,6 +621,10 @@ impl Torrent {
         })
     }
 
+    pub fn get_info(&self) -> Option<&TrInfo> {
+        self.info.as_ref()
+    }
+
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
@@ -502,12 +670,6 @@ impl Torrent {
         }
         bcode.push(b'e');
         bcode
-    }
-
-    pub fn write_to_file(&self, torrent_path: String) -> std::io::Result<()> {
-        let mut file = File::create(torrent_path)?;
-        file.write_all(&self.bencode())?;
-        Ok(())
     }
 }
 
