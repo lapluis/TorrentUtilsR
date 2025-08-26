@@ -1,6 +1,6 @@
 use chrono::DateTime;
 use sha1::{Digest, Sha1};
-use std::cmp::min;
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, metadata, read};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -9,15 +9,15 @@ use std::{fmt, vec};
 use walkdir::WalkDir;
 
 struct TrFile {
-    length: u64,
+    length: usize,
     path: Vec<String>,
 }
 
 pub struct TrInfo {
     files: Option<Vec<TrFile>>,
-    length: Option<u64>,
+    length: Option<usize>,
     name: Option<String>,
-    piece_length: u64,
+    piece_length: usize,
     pieces: Vec<u8>,
     private: bool,
 }
@@ -27,7 +27,7 @@ pub struct Torrent {
     announce_list: Option<Vec<Vec<String>>>,
     comment: Option<String>,
     created_by: Option<String>,
-    creation_date: Option<u64>,
+    creation_date: Option<i64>,
     encoding: Option<String>,
     hash: Option<String>,
     info: Option<TrInfo>,
@@ -51,7 +51,15 @@ fn bencode_string(s: &str) -> Vec<u8> {
     bcode
 }
 
-fn bencode_integer(i: u64) -> Vec<u8> {
+fn bencode_uint(i: usize) -> Vec<u8> {
+    let mut bcode: Vec<u8> = Vec::new();
+    bcode.push(b'i');
+    bcode.extend(i.to_string().as_bytes());
+    bcode.push(b'e');
+    bcode
+}
+
+fn bencode_int(i: i64) -> Vec<u8> {
     let mut bcode: Vec<u8> = Vec::new();
     bcode.push(b'i');
     bcode.extend(i.to_string().as_bytes());
@@ -103,7 +111,7 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<
             let mut buf_pos = 0;
             while buf_pos < n {
                 let space = chunk_size - piece_pos;
-                let to_copy = min(space, n - buf_pos);
+                let to_copy = cmp::min(space, n - buf_pos);
 
                 hasher.update(&buf[buf_pos..buf_pos + to_copy]);
 
@@ -132,7 +140,7 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<
     pieces
 }
 
-fn fold_piece(piece: &[u8]) -> Vec<[u8; 20]> {
+fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; 20]> {
     let layer_count = piece.len() / 20;
     let mut folder: Vec<[u8; 20]> = vec![[0u8; 20]; layer_count];
     for i in 0..layer_count {
@@ -146,7 +154,7 @@ impl TrFile {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
         bcode.extend(bencode_string("length"));
-        bcode.extend(bencode_integer(self.length));
+        bcode.extend(bencode_uint(self.length));
         bcode.extend(bencode_string("path"));
         bcode.extend(bencode_string_list(&self.path));
         bcode.push(b'e');
@@ -166,14 +174,14 @@ impl TrInfo {
         if base_metadata.is_file() {
             single_file = true;
             tr_files.push(TrFile {
-                length: base_metadata.len(),
+                length: base_metadata.len() as usize,
                 path: Vec::new(),
             });
         } else if base_metadata.is_dir() {
             for entry in WalkDir::new(base_path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
                     tr_files.push(TrFile {
-                        length: metadata(entry.path()).unwrap().len(),
+                        length: metadata(entry.path()).unwrap().len() as usize,
                         path: entry
                             .path()
                             .strip_prefix(base_path)
@@ -196,12 +204,12 @@ impl TrInfo {
         TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
             length: if single_file {
-                Some(base_metadata.len())
+                Some(base_metadata.len() as usize)
             } else {
                 None
             },
             name: Some(name.to_string()),
-            piece_length: chunk_size as u64,
+            piece_length: chunk_size,
             pieces,
             private,
         }
@@ -222,38 +230,38 @@ impl TrInfo {
         let mut pool_size = 0usize;
 
         for (file_index, tr_file) in tr_files.iter().enumerate() {
-            pool_size += tr_file.length as usize;
+            pool_size += tr_file.length;
             if file_offset > 0 {
                 if let Some(last) = piece_file_info.last_mut() {
-                    if pool_size > self.piece_length as usize {
-                        last.push((file_index, 0, self.piece_length as usize - file_offset));
-                    } else if pool_size < self.piece_length as usize {
-                        last.push((file_index, 0, tr_file.length as usize));
-                        file_offset += tr_file.length as usize;
+                    if pool_size > self.piece_length {
+                        last.push((file_index, 0, self.piece_length - file_offset));
+                    } else if pool_size < self.piece_length {
+                        last.push((file_index, 0, tr_file.length));
+                        file_offset += tr_file.length;
                         continue;
                     } else {
-                        last.push((file_index, 0, tr_file.length as usize));
+                        last.push((file_index, 0, tr_file.length));
                         file_offset = 0;
                         pool_size = 0;
                         continue;
                     }
                 }
             }
-            let piece_count = (pool_size + file_offset) / self.piece_length as usize
-                - if file_offset > 0 { 1 } else { 0 };
-            let start_pos = (self.piece_length as usize - file_offset) % self.piece_length as usize;
+            let piece_count =
+                (pool_size + file_offset) / self.piece_length - if file_offset > 0 { 1 } else { 0 };
+            let start_pos = (self.piece_length - file_offset) % self.piece_length;
             for i in 0..piece_count {
                 piece_file_info.push(vec![(
                     file_index,
-                    start_pos + self.piece_length as usize * i,
-                    self.piece_length as usize,
+                    start_pos + self.piece_length * i,
+                    self.piece_length,
                 )]);
             }
-            file_offset = pool_size % self.piece_length as usize;
+            file_offset = pool_size % self.piece_length;
             if file_offset > 0 {
                 piece_file_info.push(vec![(
                     file_index,
-                    start_pos + self.piece_length as usize * piece_count,
+                    start_pos + self.piece_length * piece_count,
                     file_offset,
                 )]);
                 pool_size = file_offset;
@@ -262,7 +270,7 @@ impl TrInfo {
             }
         }
 
-        let piece_folder: Vec<[u8; 20]> = fold_piece(&self.pieces);
+        let piece_slices: Vec<[u8; 20]> = split_hash_pieces(&self.pieces);
         let mut file_status_map: HashMap<String, bool> = HashMap::new();
         let mut failed_files: HashSet<usize> = HashSet::new();
         let mut failed_files_know: HashSet<usize> = HashSet::new();
@@ -270,7 +278,7 @@ impl TrInfo {
 
         let mut hasher = Sha1::new();
 
-        for (i, piece_hash) in piece_folder.iter().enumerate() {
+        for (i, piece_hash) in piece_slices.iter().enumerate() {
             let mut files_ok: bool = true;
             for (file_index, _, _) in &piece_file_info[i] {
                 let tr_file = &tr_files[*file_index];
@@ -282,7 +290,7 @@ impl TrInfo {
                 let f_path_str = f_path.to_str().unwrap().to_string();
                 if !file_status_map.contains_key(&f_path_str) {
                     let f_meta = metadata(&f_path);
-                    if f_meta.is_err() || f_meta.unwrap().len() != tr_file.length {
+                    if f_meta.is_err() || f_meta.unwrap().len() != tr_file.length as u64 {
                         file_status_map.insert(f_path_str.clone(), false);
                         failed_files_know.insert(*file_index);
                         files_ok = false;
@@ -365,21 +373,21 @@ impl TrInfo {
         }
         if self.length.is_some() {
             bcode.extend(bencode_string("length"));
-            bcode.extend(bencode_integer(self.length.unwrap()));
+            bcode.extend(bencode_uint(self.length.unwrap()));
         }
         if self.name.is_some() {
             bcode.extend(bencode_string("name"));
             bcode.extend(bencode_string(self.name.as_ref().unwrap()));
         }
         bcode.extend(bencode_string("piece length"));
-        bcode.extend(bencode_integer(self.piece_length));
+        bcode.extend(bencode_uint(self.piece_length));
         if !self.pieces.is_empty() {
             bcode.extend(bencode_string("pieces"));
             bcode.extend(bencode_bytes(&self.pieces));
         }
         if self.private {
             bcode.extend(bencode_string("private"));
-            bcode.extend(bencode_integer(1));
+            bcode.extend(bencode_uint(1));
         }
         bcode.push(b'e');
         bcode
@@ -399,7 +407,7 @@ impl Torrent {
         announce_list: Option<Vec<Vec<String>>>,
         comment: Option<String>,
         created_by: Option<String>,
-        creation_date: Option<u64>,
+        creation_date: Option<i64>,
         encoding: Option<String>,
     ) -> Self {
         Torrent {
@@ -428,7 +436,8 @@ impl Torrent {
 
     pub fn read_torrent(tr_path: String) -> Result<Self, String> {
         enum Bencode<'a> {
-            Int(i64),
+            Int(usize),
+            UInt(i64),
             Bytes(&'a [u8]),
             List(Vec<Bencode<'a>>),
             Dict(HashMap<String, Bencode<'a>>),
@@ -450,9 +459,14 @@ impl Torrent {
                     }
                     let num_str = std::str::from_utf8(&data[start..*pos])
                         .map_err(|_| "invalid utf8 in int")?;
-                    let val = num_str.parse::<i64>().map_err(|_| "invalid int")?;
                     *pos += 1;
-                    Ok(Bencode::Int(val))
+                    if num_str.starts_with("-") {
+                        let val = num_str.parse::<i64>().map_err(|_| "invalid int")?;
+                        Ok(Bencode::UInt(val))
+                    } else {
+                        let val = num_str.parse::<usize>().map_err(|_| "invalid int")?;
+                        Ok(Bencode::Int(val))
+                    }
                 }
                 Some(b'l') => {
                     *pos += 1;
@@ -521,7 +535,7 @@ impl Torrent {
                 for file in files {
                     if let Bencode::Dict(m) = file {
                         let length = match m.get("length") {
-                            Some(Bencode::Int(i)) => *i as u64,
+                            Some(Bencode::Int(i)) => *i,
                             _ => return Err("file length invalid".into()),
                         };
                         let path = match m.get("path") {
@@ -547,7 +561,7 @@ impl Torrent {
         let tr_info = TrInfo {
             files: tr_files,
             length: match info_dict.get("length") {
-                Some(Bencode::Int(i)) => Some(*i as u64),
+                Some(Bencode::Int(i)) => Some(*i),
                 _ => None,
             },
             name: match info_dict.get("name") {
@@ -555,7 +569,7 @@ impl Torrent {
                 _ => None,
             },
             piece_length: match info_dict.get("piece length") {
-                Some(Bencode::Int(i)) => *i as u64,
+                Some(Bencode::Int(i)) => *i,
                 _ => return Err("piece length missing".into()),
             },
             pieces: match info_dict.get("pieces") {
@@ -606,7 +620,8 @@ impl Torrent {
                 _ => None,
             },
             creation_date: match tr_dict.get("creation date") {
-                Some(Bencode::Int(i)) => Some(*i as u64),
+                Some(Bencode::UInt(i)) => Some(*i),
+                Some(Bencode::Int(i)) => Some(*i as i64),
                 _ => None,
             },
             encoding: match tr_dict.get("encoding") {
@@ -652,9 +667,9 @@ impl Torrent {
             bcode.extend(bencode_string("created by"));
             bcode.extend(bencode_string(self.created_by.as_ref().unwrap()));
         }
-        if self.creation_date.is_none() {
+        if self.creation_date.is_some() {
             bcode.extend(bencode_string("creation date"));
-            bcode.extend(bencode_integer(self.creation_date.unwrap()));
+            bcode.extend(bencode_int(self.creation_date.unwrap()));
         }
         if self.encoding.is_some() {
             bcode.extend(bencode_string("encoding"));
@@ -663,7 +678,9 @@ impl Torrent {
         if self.info.is_some() {
             bcode.extend(bencode_string("info"));
             bcode.extend(self.info.as_ref().unwrap().bencode());
-        } // TODO: error if info is missing
+        } else {
+            panic!("info dict is missing");
+        }
         if self.hash.is_some() {
             bcode.extend(bencode_string("hash"));
             bcode.extend(bencode_string(self.hash.as_ref().unwrap()));
@@ -716,8 +733,7 @@ impl fmt::Display for Torrent {
             writeln!(f, "  Created by: {created_by}")?;
         }
         if let Some(date) = self.creation_date {
-            // let dt = Utc.timestamp_opt(date as i64, 0).single();
-            let dt = DateTime::from_timestamp(date as i64, 0);
+            let dt = DateTime::from_timestamp(date, 0);
             if let Some(dt) = dt {
                 let dt = dt.format("%Y-%m-%d %H:%M:%S");
                 writeln!(f, "  Creation date: {date} [{dt}]")?;
@@ -744,7 +760,7 @@ impl fmt::Display for Torrent {
             for file in files {
                 if shown < 100 {
                     let path_str = file.path.join("/");
-                    writeln!(f, "    - {path_str} [{length}]", length = file.length)?;
+                    writeln!(f, "    - {path_str} [{length} bytes]", length = file.length)?;
                     shown += 1;
                 } else {
                     truncated = true;

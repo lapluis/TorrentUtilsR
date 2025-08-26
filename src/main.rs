@@ -70,7 +70,7 @@ fn main() {
                         env!("CARGO_PKG_NAME"),
                         env!("CARGO_PKG_VERSION")
                     )),
-                    Some(chrono::offset::Utc::now().timestamp() as u64),
+                    Some(chrono::offset::Utc::now().timestamp()),
                     Some(String::from("UTF-8")),
                 );
 
