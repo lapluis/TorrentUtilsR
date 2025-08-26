@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::process;
 
 mod torrent;
 
@@ -52,7 +53,7 @@ fn main() {
                     Ok(torrent) => println!("{torrent}"),
                     Err(e) => {
                         eprintln!("Error reading torrent file: {e}");
-                        std::process::exit(1);
+                        process::exit(1);
                     }
                 }
             } else {
@@ -91,12 +92,13 @@ fn main() {
                     torrent.create_torrent(input.clone(), args.piece_size as u64, args.private)
                 {
                     eprintln!("Error creating torrent: {e}");
-                    std::process::exit(1);
+                    process::exit(1);
                 }
 
-                torrent
-                    .write_to_file(format!("{input}.torrent"), args.force)
-                    .expect("Failed to write torrent file");
+                if let Err(e) = torrent.write_to_file(format!("{input}.torrent"), args.force) {
+                    eprintln!("Error writing torrent file: {e}");
+                    process::exit(1);
+                }
             }
         }
         Some(ref inputs) if inputs.len() == 2 => {
@@ -109,31 +111,39 @@ fn main() {
                 (inputs[1].clone(), inputs[0].clone())
             } else {
                 eprintln!("Error: Please provide a .torrent file as one of the arguments.");
-                return;
+                process::exit(1);
             };
 
             let torrent = match torrent::Torrent::read_torrent(torrent_path) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("Error reading torrent file: {e}");
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             };
-            let tr_info = torrent.get_info().unwrap();
+            let tr_info = match torrent.get_info() {
+                Some(info) => info,
+                None => {
+                    eprintln!("Error: Torrent file does not contain valid info section");
+                    process::exit(1);
+                }
+            };
             if let Err(e) = tr_info.verify(target_path) {
                 eprintln!("Error during verification: {e}");
-                std::process::exit(1);
+                process::exit(1);
             }
         }
         Some(ref _inputs) => {
             eprintln!(
                 "Error: Please provide exactly one argument: either a .torrent file to read or a target path to create a torrent."
             );
+            process::exit(1);
         }
         None => {
             eprintln!(
                 "Error: No input provided. Please provide a .torrent file to read or a target path to create a torrent."
             );
+            process::exit(1);
         }
     }
 }
