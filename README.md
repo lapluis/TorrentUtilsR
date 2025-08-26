@@ -73,11 +73,22 @@ Options:
   -p, --private               Private Torrent, overrides config
   -c, --comment <COMMENT>     Comment
   -d, --no-date               No creation date
+  -w, --walk-mode <WALK_MODE>  File walking mode for directories [default: 0]
   -f, --force                 Force overwrite
   -q, --quiet                 Hide progress bar and other non-error output
   -h, --help                  Print help
   -V, --version               Print version
 ```
+
+#### Walk Modes
+
+The `-w, --walk-mode` option controls how files are ordered when creating torrents from directories:
+
+- **0 (Default)**: Standard directory traversal order
+- **1 (Alphabetical)**: Sort files alphabetically
+- **2 (Breadth-First Alphabetical)**: Breadth-first traversal with alphabetical sorting (TorrentUtils compatible)
+- **3 (Breadth-First Level)**: Breadth-first traversal by directory level (qBittorrent compatible)
+- **4 (File Size)**: Sort files by size
 
 ## Configuration
 
@@ -89,6 +100,7 @@ TorrentUtilsR supports configuration via a TOML file. By default, it looks for `
 # config.toml
 private = false
 piece_length = 131072  # 128 KiB
+walk_mode = 0          # Default file walking mode
 
 tracker_list = [
     "http://tracker1.example.com:8080/announce",
@@ -101,6 +113,7 @@ tracker_list = [
 
 - **`private`**: Boolean, creates private torrents by default
 - **`piece_length`**: Integer, default piece size in bytes (must be power of 2)
+- **`walk_mode`**: Integer (0-4), default file walking mode for directories
 - **`tracker_list`**: Array of tracker URLs to include in created torrents
 
 ## Examples
@@ -124,6 +137,16 @@ TorrentUtilsR "My Series/" \
   --piece-size 20 \
   --comment "Complete series collection" \
   --announce "http://private-tracker.example.com/announce"
+
+# Create torrent with alphabetical file ordering
+TorrentUtilsR "My Directory/" \
+  --walk-mode 1 \
+  --output "sorted-torrent.torrent"
+
+# Create torrent with qBittorrent-compatible file ordering
+TorrentUtilsR "My Directory/" \
+  --walk-mode 3 \
+  --output "qbittorrent-compatible.torrent"
 ```
 
 ### Verification Example
