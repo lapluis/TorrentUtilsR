@@ -362,13 +362,15 @@ impl TrInfo {
                     .to_string();
                 if !file_status_map.contains_key(&f_path_str) {
                     let f_meta = metadata(&f_path);
-                    if f_meta.is_err() || f_meta.unwrap().len() != tr_file.length as u64 {
+                    if f_meta.is_err() || f_meta?.len() != tr_file.length as u64 {
                         file_status_map.insert(f_path_str.clone(), false);
                         failed_files_know.insert(*file_index);
                         files_ok = false;
                     } else {
                         file_status_map.insert(f_path_str.clone(), true);
                     }
+                } else if !file_status_map[&f_path_str] {
+                    files_ok = false;
                 }
             }
             if !files_ok {
