@@ -1,4 +1,5 @@
 use chrono::{Local, TimeZone};
+use indicatif::{ProgressBar, ProgressStyle};
 use sha1::{Digest, Sha1};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
@@ -138,19 +139,67 @@ fn bencode_file_list(list: &[TrFile]) -> Vec<u8> {
     bcode
 }
 
-fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Result<Vec<u8>> {
+fn hash_pieces(
+    base_path: &Path,
+    tr_files: &[TrFile],
+    chunk_size: usize,
+    quiet: bool,
+) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; 1 << 18]; // 256 KiB buffer
     let mut piece_pos = 0usize;
     let mut pieces = Vec::new();
     let mut piece_count = 0u64;
     let mut hasher = Sha1::new();
 
-    for tr_file in tr_files {
+    // Calculate total size for progress estimation
+    let total_size: usize = tr_files.iter().map(|f| f.length).sum();
+    let estimated_pieces = total_size.div_ceil(chunk_size);
+    let total_files = tr_files.len();
+
+    // Setup progress bar only if not quiet
+    let pb = if !quiet {
+        let pb = ProgressBar::new(estimated_pieces as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} pieces ({percent}%)")
+                .unwrap()
+                .progress_chars("#>-")
+        );
+        Some(pb)
+    } else {
+        None
+    };
+
+    for (file_index, tr_file) in tr_files.iter().enumerate() {
         let f_path = if tr_file.path.is_empty() {
             base_path.to_path_buf()
         } else {
             base_path.join(tr_file.path.iter().collect::<PathBuf>())
         };
+
+        // Update the message to show current file being processed with counter
+        let rel_path = if tr_file.path.is_empty() {
+            base_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        } else {
+            tr_file.path.join("/")
+        };
+
+        let file_counter = if total_files >= 100 {
+            format!("[{:03}/{}]", file_index + 1, total_files)
+        } else if total_files >= 10 {
+            format!("[{:02}/{}]", file_index + 1, total_files)
+        } else {
+            format!("[{}/{}]", file_index + 1, total_files)
+        };
+
+        if let Some(ref pb) = pb {
+            pb.set_message(format!("Processing: {file_counter} {rel_path}"));
+        }
+
         let mut f = File::open(&f_path)?;
 
         loop {
@@ -172,6 +221,9 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Resu
                 if piece_pos == chunk_size {
                     pieces.extend_from_slice(&hasher.finalize_reset());
                     piece_count += 1;
+                    if let Some(ref pb) = pb {
+                        pb.set_position(piece_count);
+                    }
                     piece_pos = 0;
                 }
             }
@@ -181,11 +233,13 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Resu
     if piece_pos > 0 {
         pieces.extend_from_slice(&hasher.finalize());
         piece_count += 1;
+        if let Some(ref pb) = pb {
+            pb.set_position(piece_count);
+        }
     }
 
-    #[cfg(debug_assertions)]
-    {
-        println!("Total pieces: {piece_count}");
+    if let Some(pb) = pb {
+        pb.finish_with_message(format!("Processed {total_files} files"));
     }
 
     Ok(pieces)
@@ -214,7 +268,7 @@ impl TrFile {
 }
 
 impl TrInfo {
-    fn new(target_path: String, piece_size: u64, private: bool) -> Result<TrInfo> {
+    fn new(target_path: String, piece_size: u64, private: bool, quiet: bool) -> Result<TrInfo> {
         let base_path = Path::new(&target_path);
         let name = base_path
             .file_name()
@@ -264,7 +318,7 @@ impl TrInfo {
         }
 
         let chunk_size: usize = 1 << piece_size;
-        let pieces = hash_pieces(base_path, &tr_files, chunk_size)?;
+        let pieces = hash_pieces(base_path, &tr_files, chunk_size, quiet)?;
 
         Ok(TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
@@ -409,18 +463,22 @@ impl TrInfo {
         }
 
         println!("Verification Result:");
-        
+
         let total_pieces = piece_slices.len();
         let failed_piece_count = failed_pieces.len();
         let passed_piece_count = total_pieces - failed_piece_count;
-        
+
         let total_files = tr_files.len();
         let failed_file_count = failed_files.len();
         let passed_file_count = total_files - failed_file_count;
-        
-        println!("Pieces: {total_pieces:8} total = {passed_piece_count:8} passed + {failed_piece_count:8} failed");
-        println!("Files:  {total_files:8} total = {passed_file_count:8} passed + {failed_file_count:8} failed");
-        
+
+        println!(
+            "Pieces: {total_pieces:8} total = {passed_piece_count:8} passed + {failed_piece_count:8} failed"
+        );
+        println!(
+            "Files:  {total_files:8} total = {passed_file_count:8} passed + {failed_file_count:8} failed"
+        );
+
         if failed_files.is_empty() {
             println!("All files are OK.");
         } else {
@@ -444,7 +502,7 @@ impl TrInfo {
                 };
                 println!("- {} ({} bytes){}", rel_path, tr_file.length, known_issue);
             }
-            
+
             if !failed_pieces.is_empty() {
                 print!("\nFailed pieces: ");
                 let failed_pieces = {
@@ -524,8 +582,9 @@ impl Torrent {
         target_path: String,
         piece_size: u64,
         private: bool,
+        quiet: bool,
     ) -> Result<()> {
-        let info = TrInfo::new(target_path, piece_size, private)?;
+        let info = TrInfo::new(target_path, piece_size, private, quiet)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())

@@ -34,6 +34,10 @@ struct Args {
     /// Force overwrite
     #[arg(short = 'f', long)]
     force: bool,
+
+    /// Hide progress bar and other non-error output
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
 }
 
 fn main() {
@@ -89,7 +93,7 @@ fn main() {
                 );
 
                 if let Err(e) =
-                    torrent.create_torrent(input.clone(), args.piece_size as u64, args.private)
+                    torrent.create_torrent(input.clone(), args.piece_size as u64, args.private, args.quiet)
                 {
                     eprintln!("Error creating torrent: {e}");
                     process::exit(1);

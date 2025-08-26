@@ -1,11 +1,12 @@
 [package]
 name = "TorrentUtilsR"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 
 [dependencies]
 chrono = "0.4.41"
 clap = { version = "4.5.45", features = ["derive"] }
 hex = "0.4.3"
+indicatif = "0.18.0"
 sha1 = "0.10.6"
 walkdir = "2.5.0"
