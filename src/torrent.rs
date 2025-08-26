@@ -409,10 +409,22 @@ impl TrInfo {
         }
 
         println!("Verification Result:");
+        
+        let total_pieces = piece_slices.len();
+        let failed_piece_count = failed_pieces.len();
+        let passed_piece_count = total_pieces - failed_piece_count;
+        
+        let total_files = tr_files.len();
+        let failed_file_count = failed_files.len();
+        let passed_file_count = total_files - failed_file_count;
+        
+        println!("Pieces: {total_pieces:8} total = {passed_piece_count:8} passed + {failed_piece_count:8} failed");
+        println!("Files:  {total_files:8} total = {passed_file_count:8} passed + {failed_file_count:8} failed");
+        
         if failed_files.is_empty() {
             println!("All files are OK.");
         } else {
-            println!("Some files failed verification:");
+            println!("\nSome files failed verification:");
             let mut failed_files: Vec<usize> = failed_files.iter().cloned().collect();
             failed_files.sort();
             for file_index in failed_files {
@@ -432,16 +444,19 @@ impl TrInfo {
                 };
                 println!("- {} ({} bytes){}", rel_path, tr_file.length, known_issue);
             }
-            print!("\nFailed pieces: ");
-            let failed_pieces = {
-                let mut v: Vec<_> = failed_pieces.iter().cloned().collect();
-                v.sort();
-                v.into_iter()
-                    .map(|i| i.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            println!("{failed_pieces}");
+            
+            if !failed_pieces.is_empty() {
+                print!("\nFailed pieces: ");
+                let failed_pieces = {
+                    let mut v: Vec<_> = failed_pieces.iter().cloned().collect();
+                    v.sort();
+                    v.into_iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                println!("{failed_pieces}");
+            }
         }
         Ok(())
     }
