@@ -351,47 +351,24 @@ impl TrInfo {
         };
 
         let mut piece_file_info: Vec<Vec<(usize, usize, usize)>> = Vec::new(); // piece_index -> [(file_index, file_offset, length), ...]
-        let mut file_offset = 0usize;
-        let mut pool_size = 0usize;
+        let mut unfilled_size = 0usize;
 
         for (file_index, tr_file) in tr_files.iter().enumerate() {
-            pool_size += tr_file.length;
-            if file_offset > 0 {
-                if let Some(last) = piece_file_info.last_mut() {
-                    if pool_size > self.piece_length {
-                        last.push((file_index, 0, self.piece_length - file_offset));
-                    } else if pool_size < self.piece_length {
-                        last.push((file_index, 0, tr_file.length));
-                        file_offset += tr_file.length;
-                        continue;
-                    } else {
-                        last.push((file_index, 0, tr_file.length));
-                        file_offset = 0;
-                        pool_size = 0;
-                        continue;
-                    }
+            let mut rest_size = tr_file.length;
+            let mut file_offset = 0usize;
+            while rest_size > 0 {
+                if unfilled_size == 0 {
+                    piece_file_info.push(Vec::new());
+                    unfilled_size = self.piece_length;
                 }
-            }
-            let piece_count =
-                (pool_size + file_offset) / self.piece_length - if file_offset > 0 { 1 } else { 0 };
-            let start_pos = (self.piece_length - file_offset) % self.piece_length;
-            for i in 0..piece_count {
-                piece_file_info.push(vec![(
-                    file_index,
-                    start_pos + self.piece_length * i,
-                    self.piece_length,
-                )]);
-            }
-            file_offset = pool_size % self.piece_length;
-            if file_offset > 0 {
-                piece_file_info.push(vec![(
-                    file_index,
-                    start_pos + self.piece_length * piece_count,
-                    file_offset,
-                )]);
-                pool_size = file_offset;
-            } else {
-                pool_size = 0;
+                let used_size = cmp::min(rest_size, unfilled_size);
+                piece_file_info
+                    .last_mut()
+                    .unwrap()
+                    .push((file_index, file_offset, used_size));
+                file_offset += used_size;
+                rest_size -= used_size;
+                unfilled_size -= used_size;
             }
         }
 
@@ -505,19 +482,6 @@ impl TrInfo {
                     ""
                 };
                 println!("- {} ({} bytes){}", rel_path, tr_file.length, known_issue);
-            }
-
-            if !failed_pieces.is_empty() {
-                print!("\nFailed pieces: ");
-                let failed_pieces = {
-                    let mut v: Vec<_> = failed_pieces.iter().cloned().collect();
-                    v.sort();
-                    v.into_iter()
-                        .map(|i| i.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                println!("{failed_pieces}");
             }
         }
         Ok(())
