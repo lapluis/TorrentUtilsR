@@ -432,12 +432,16 @@ impl TrInfo {
                 };
                 println!("- {} ({} bytes){}", rel_path, tr_file.length, known_issue);
             }
-            println!("\nFailed pieces:");
-            let mut failed_pieces: Vec<usize> = failed_pieces.iter().cloned().collect();
-            failed_pieces.sort();
-            for piece_index in &failed_pieces {
-                println!("- Piece {piece_index}");
-            }
+            print!("\nFailed pieces: ");
+            let failed_pieces = {
+                let mut v: Vec<_> = failed_pieces.iter().cloned().collect();
+                v.sort();
+                v.into_iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            println!("{failed_pieces}");
         }
         Ok(())
     }
