@@ -12,4 +12,4 @@ A utility for working with torrent files based on Rust.
 - [x] CLI
 - [x] progress bar
 - [x] CLI optim
-- [ ] load config file
+- [x] load config file

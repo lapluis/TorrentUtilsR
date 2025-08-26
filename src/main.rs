@@ -1,8 +1,18 @@
 use clap::Parser;
+use serde::Deserialize;
 use std::process;
 
 mod torrent;
 mod utils;
+
+const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes, 512 KiB
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    private: bool,
+    piece_length: usize, // in bytes
+    tracker_list: Vec<String>,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = env!("CARGO_PKG_NAME"))]
@@ -12,19 +22,23 @@ struct Args {
     /// Torrent/Target Path or Both
     input: Option<Vec<String>>,
 
+    /// Config file
+    #[arg(short = 'g', long, default_value = "config.toml")]
+    config: String,
+
     /// Output Path (only for create mode)
     #[arg(short = 'o', long)]
     output: Option<String>,
 
-    /// Piece Size [11, 24]
-    #[arg(short = 'l', long = "piece-size", default_value_t = 16)]
-    piece_size: u16,
+    /// Piece Size (1 << n, [11, 24]), overrides config [default: 16]
+    #[arg(short = 'l', long = "piece-size")]
+    piece_size: Option<u8>,
 
-    /// Announce URLs, multiple allowed
+    /// Announce URLs, multiple allowed, overrides config ("" to clear)
     #[arg(short = 'a', long)]
     announce: Option<Vec<String>>,
 
-    /// Private Torrent
+    /// Private Torrent, overrides config
     #[arg(short = 'p', long)]
     private: bool,
 
@@ -53,11 +67,6 @@ fn main() {
         println!("{args:?}");
     }
 
-    if args.piece_size < 11 || args.piece_size > 24 {
-        eprintln!("Error: Piece size must be between 11 and 24 (inclusive).");
-        process::exit(1);
-    }
-
     match args.input {
         Some(ref inputs) if inputs.len() == 1 => {
             let input = &inputs[0];
@@ -72,7 +81,36 @@ fn main() {
                 }
             } else {
                 // create mode
-                let piece_length = 1usize << args.piece_size;
+                let mut config: Config = std::fs::read_to_string(&args.config)
+                    .ok()
+                    .and_then(|content| {
+                        toml::from_str::<Config>(&content).ok().inspect(|_| {
+                            println!("Config loaded successfully");
+                        })
+                    })
+                    .unwrap_or_else(|| Config {
+                        private: false,
+                        piece_length: 1usize << DEF_PIECE_SIZE,
+                        tracker_list: Vec::new(),
+                    });
+
+                config.piece_length = match args.piece_size {
+                    Some(n) if (11..=24).contains(&n) => 1usize << n,
+                    Some(n) => {
+                        eprintln!(
+                            "Error: Piece size must be between 11 and 24 (inclusive). Got {n}."
+                        );
+                        process::exit(1);
+                    }
+                    None => config.piece_length,
+                };
+                config.private = args.private || config.private;
+                config.tracker_list = match args.announce {
+                    Some(ref list) if !list.is_empty() && list[0].is_empty() => Vec::new(),
+                    Some(ref list) if !list.is_empty() => list.clone(),
+                    _ => config.tracker_list,
+                };
+
                 let torrent_path = match args.output {
                     Some(ref path) => {
                         if path.ends_with(".torrent") {
@@ -90,16 +128,20 @@ fn main() {
                     println!("Torrent: {torrent_path}");
                     println!(
                         "Piece Length: {} bytes [{}]",
-                        piece_length,
-                        utils::human_size(piece_length)
+                        config.piece_length,
+                        utils::human_size(config.piece_length)
                     );
+                    if config.private {
+                        println!("Private Torrent");
+                    }
                     println!();
                 }
 
-                let announce_list = match args.announce {
-                    Some(ref urls) if !urls.is_empty() => vec![urls.clone()],
-                    _ => Vec::new(),
-                };
+                let announce_list: Vec<Vec<String>> = config
+                    .tracker_list
+                    .iter()
+                    .map(|url| vec![url.clone()])
+                    .collect();
 
                 let mut torrent = torrent::Torrent::new(
                     if announce_list.is_empty() {
@@ -126,9 +168,12 @@ fn main() {
                     Some(String::from("UTF-8")),
                 );
 
-                if let Err(e) =
-                    torrent.create_torrent(input.clone(), piece_length, args.private, args.quiet)
-                {
+                if let Err(e) = torrent.create_torrent(
+                    input.clone(),
+                    config.piece_length,
+                    config.private,
+                    args.quiet,
+                ) {
                     eprintln!("Error creating torrent: {e}");
                     process::exit(1);
                 }
