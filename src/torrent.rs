@@ -2,6 +2,7 @@ use chrono::{Local, TimeZone};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha1::{Digest, Sha1};
 use std::cmp;
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, metadata, read};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -66,6 +67,14 @@ impl From<String> for TorrentError {
 }
 
 pub type Result<T> = std::result::Result<T, TorrentError>;
+
+pub enum WalkMode {
+    Default,
+    Alphabetical,
+    BreadthFirstAlphabetical, // tu
+    BreadthFirstLevel,        // qb
+    FileSize,
+}
 
 struct TrFile {
     length: usize,
@@ -273,7 +282,13 @@ impl TrFile {
 }
 
 impl TrInfo {
-    fn new(target_path: String, piece_length: usize, private: bool, quiet: bool) -> Result<TrInfo> {
+    fn new(
+        target_path: String,
+        piece_length: usize,
+        private: bool,
+        quiet: bool,
+        walk_mode: WalkMode,
+    ) -> Result<TrInfo> {
         let base_path = Path::new(&target_path);
         let name = base_path
             .file_name()
@@ -293,7 +308,11 @@ impl TrInfo {
                 path: Vec::new(),
             });
         } else if base_metadata.is_dir() {
-            for entry in WalkDir::new(base_path).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(base_path)
+                .follow_links(true)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 if entry.file_type().is_file() {
                     let entry_metadata = metadata(entry.path())?;
                     let relative_path = entry
@@ -320,6 +339,77 @@ impl TrInfo {
             return Err(TorrentError::InvalidPath(
                 "Target path is neither a file nor a directory".to_string(),
             ));
+        }
+
+        match walk_mode {
+            WalkMode::Default => {}
+            WalkMode::Alphabetical => {
+                tr_files.sort_by(|a, b| {
+                    let a_path = a.path.join(MAIN_SEPARATOR.to_string().as_str());
+                    let b_path = b.path.join(MAIN_SEPARATOR.to_string().as_str());
+                    a_path.cmp(&b_path)
+                });
+            }
+            WalkMode::BreadthFirstAlphabetical => {
+                tr_files.sort_by(|a, b| {
+                    let max_len = a.path.len().max(b.path.len());
+
+                    for i in 0..max_len {
+                        match (a.path.get(i), b.path.get(i)) {
+                            (Some(seg_a), Some(seg_b)) => {
+                                let lower_cmp = seg_a.to_lowercase().cmp(&seg_b.to_lowercase());
+                                if lower_cmp != Ordering::Equal {
+                                    return lower_cmp;
+                                }
+                                let orig_cmp = seg_a.cmp(seg_b);
+                                if orig_cmp != Ordering::Equal {
+                                    return orig_cmp;
+                                }
+                            }
+                            (None, Some(_)) => return Ordering::Less,
+                            (Some(_), None) => return Ordering::Greater,
+                            (None, None) => break,
+                        }
+                    }
+
+                    Ordering::Equal
+                });
+            }
+            WalkMode::BreadthFirstLevel => {
+                tr_files.sort_by(|a, b| {
+                    let max_len = a.path.len().max(b.path.len());
+
+                    for i in 0..max_len {
+                        match (a.path.get(i), b.path.get(i)) {
+                            (Some(seg_a), Some(seg_b)) => {
+                                if i == a.path.len() - 1 && i < b.path.len() - 1 {
+                                    return Ordering::Less;
+                                }
+                                if i == b.path.len() - 1 && i < a.path.len() - 1 {
+                                    return Ordering::Greater;
+                                }
+
+                                let lower_cmp = seg_a.to_lowercase().cmp(&seg_b.to_lowercase());
+                                if lower_cmp != Ordering::Equal {
+                                    return lower_cmp;
+                                }
+                                let orig_cmp = seg_a.cmp(seg_b);
+                                if orig_cmp != Ordering::Equal {
+                                    return orig_cmp;
+                                }
+                            }
+                            (None, Some(_)) => return Ordering::Less,
+                            (Some(_), None) => return Ordering::Greater,
+                            (None, None) => break,
+                        }
+                    }
+
+                    Ordering::Equal
+                });
+            }
+            WalkMode::FileSize => {
+                tr_files.sort_by(|a, b| b.length.cmp(&a.length));
+            }
         }
 
         let pieces = hash_pieces(base_path, &tr_files, piece_length, quiet)?;
@@ -593,8 +683,9 @@ impl Torrent {
         piece_length: usize,
         private: bool,
         quiet: bool,
+        walk_mode: WalkMode,
     ) -> Result<()> {
-        let info = TrInfo::new(target_path, piece_length, private, quiet)?;
+        let info = TrInfo::new(target_path, piece_length, private, quiet, walk_mode)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())

@@ -12,6 +12,7 @@ struct Config {
     private: bool,
     piece_length: usize, // in bytes
     tracker_list: Vec<String>,
+    walk_mode: u8,
 }
 
 #[derive(Parser, Debug)]
@@ -49,6 +50,10 @@ struct Args {
     /// No creation date
     #[arg(short = 'd', long)]
     no_date: bool,
+
+    /// Walk Mode [default: 0]
+    #[arg(short = 'w', long)]
+    walk_mode: Option<u8>,
 
     /// Force overwrite
     #[arg(short = 'f', long)]
@@ -92,6 +97,7 @@ fn main() {
                         private: false,
                         piece_length: 1usize << DEF_PIECE_SIZE,
                         tracker_list: Vec::new(),
+                        walk_mode: 0,
                     });
 
                 config.piece_length = match args.piece_size {
@@ -109,6 +115,22 @@ fn main() {
                     Some(ref list) if !list.is_empty() && list[0].is_empty() => Vec::new(),
                     Some(ref list) if !list.is_empty() => list.clone(),
                     _ => config.tracker_list,
+                };
+                config.walk_mode = match args.walk_mode {
+                    Some(n) => n,
+                    None => config.walk_mode,
+                };
+
+                let walk_mode = match config.walk_mode {
+                    0 => torrent::WalkMode::Default,
+                    1 => torrent::WalkMode::Alphabetical,
+                    2 => torrent::WalkMode::BreadthFirstAlphabetical,
+                    3 => torrent::WalkMode::BreadthFirstLevel,
+                    4 => torrent::WalkMode::FileSize,
+                    _ => {
+                        eprintln!("Error: Invalid walk mode.");
+                        process::exit(1);
+                    }
                 };
 
                 let torrent_path = match args.output {
@@ -173,6 +195,7 @@ fn main() {
                     config.piece_length,
                     config.private,
                     args.quiet,
+                    walk_mode,
                 ) {
                     eprintln!("Error creating torrent: {e}");
                     process::exit(1);
