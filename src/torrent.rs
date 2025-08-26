@@ -1,4 +1,4 @@
-use chrono::{TimeZone, Local};
+use chrono::{Local, TimeZone};
 use sha1::{Digest, Sha1};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
@@ -7,6 +7,57 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::{fmt, vec};
 use walkdir::WalkDir;
+
+#[derive(Debug)]
+pub enum TorrentError {
+    Io(std::io::Error),
+    InvalidPath(String),
+    InvalidTorrent(String),
+    MissingField(String),
+    ParseError(String),
+    EncodingError(String),
+}
+
+impl fmt::Display for TorrentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TorrentError::Io(err) => write!(f, "IO error: {err}"),
+            TorrentError::InvalidPath(path) => write!(f, "Invalid path: {path}"),
+            TorrentError::InvalidTorrent(msg) => write!(f, "Invalid torrent: {msg}"),
+            TorrentError::MissingField(field) => write!(f, "Missing field: {field}"),
+            TorrentError::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            TorrentError::EncodingError(msg) => write!(f, "Encoding error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for TorrentError {}
+
+impl From<std::io::Error> for TorrentError {
+    fn from(err: std::io::Error) -> Self {
+        TorrentError::Io(err)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for TorrentError {
+    fn from(err: std::string::FromUtf8Error) -> Self {
+        TorrentError::EncodingError(format!("UTF-8 conversion error: {err}"))
+    }
+}
+
+impl From<&str> for TorrentError {
+    fn from(err: &str) -> Self {
+        TorrentError::ParseError(err.to_string())
+    }
+}
+
+impl From<String> for TorrentError {
+    fn from(err: String) -> Self {
+        TorrentError::ParseError(err)
+    }
+}
+
+pub type Result<T> = std::result::Result<T, TorrentError>;
 
 struct TrFile {
     length: usize,
@@ -67,7 +118,7 @@ fn bencode_int(i: i64) -> Vec<u8> {
     bcode
 }
 
-fn bencode_string_list(list: &Vec<String>) -> Vec<u8> {
+fn bencode_string_list(list: &[String]) -> Vec<u8> {
     let mut bcode: Vec<u8> = Vec::new();
     bcode.push(b'l');
     for item in list {
@@ -87,7 +138,7 @@ fn bencode_file_list(list: &[TrFile]) -> Vec<u8> {
     bcode
 }
 
-fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<u8> {
+fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; 1 << 18]; // 256 KiB buffer
     let mut piece_pos = 0usize;
     let mut pieces = Vec::new();
@@ -100,10 +151,10 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<
         } else {
             base_path.join(tr_file.path.iter().collect::<PathBuf>())
         };
-        let mut f: File = File::open(f_path).unwrap();
+        let mut f = File::open(&f_path)?;
 
         loop {
-            let n = f.read(&mut buf).unwrap();
+            let n = f.read(&mut buf)?;
             if n == 0 {
                 break;
             }
@@ -137,16 +188,16 @@ fn hash_pieces(base_path: &Path, tr_files: &[TrFile], chunk_size: usize) -> Vec<
         println!("Total pieces: {piece_count}");
     }
 
-    pieces
+    Ok(pieces)
 }
 
 fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; 20]> {
     let layer_count = piece.len() / 20;
-    let mut folder: Vec<[u8; 20]> = vec![[0u8; 20]; layer_count];
+    let mut slices: Vec<[u8; 20]> = vec![[0u8; 20]; layer_count];
     for i in 0..layer_count {
-        folder[i].copy_from_slice(&piece[i * 20..(i + 1) * 20]);
+        slices[i].copy_from_slice(&piece[i * 20..(i + 1) * 20]);
     }
-    folder
+    slices
 }
 
 impl TrFile {
@@ -163,12 +214,17 @@ impl TrFile {
 }
 
 impl TrInfo {
-    fn new(target_path: String, piece_size: u64, private: bool) -> TrInfo {
+    fn new(target_path: String, piece_size: u64, private: bool) -> Result<TrInfo> {
         let base_path = Path::new(&target_path);
-        let name = base_path.file_name().unwrap().to_str().unwrap();
+        let name = base_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                TorrentError::InvalidPath(format!("Invalid file name in path: {target_path}"))
+            })?;
         let mut single_file = false;
 
-        let base_metadata = metadata(base_path).unwrap();
+        let base_metadata = metadata(base_path)?;
         let mut tr_files: Vec<TrFile> = Vec::new();
 
         if base_metadata.is_file() {
@@ -180,28 +236,37 @@ impl TrInfo {
         } else if base_metadata.is_dir() {
             for entry in WalkDir::new(base_path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
+                    let entry_metadata = metadata(entry.path())?;
+                    let relative_path = entry
+                        .path()
+                        .strip_prefix(base_path)
+                        .map_err(|_| {
+                            TorrentError::InvalidPath("Failed to create relative path".to_string())
+                        })?
+                        .to_str()
+                        .ok_or_else(|| {
+                            TorrentError::InvalidPath("Path contains invalid UTF-8".to_string())
+                        })?
+                        .split(MAIN_SEPARATOR)
+                        .map(str::to_owned)
+                        .collect();
+
                     tr_files.push(TrFile {
-                        length: metadata(entry.path()).unwrap().len() as usize,
-                        path: entry
-                            .path()
-                            .strip_prefix(base_path)
-                            .unwrap()
-                            .to_str()
-                            .unwrap()
-                            .split(MAIN_SEPARATOR)
-                            .map(str::to_owned)
-                            .collect(),
+                        length: entry_metadata.len() as usize,
+                        path: relative_path,
                     });
                 }
             }
         } else {
-            panic!("Target path is neither a file nor a directory");
+            return Err(TorrentError::InvalidPath(
+                "Target path is neither a file nor a directory".to_string(),
+            ));
         }
 
         let chunk_size: usize = 1 << piece_size;
-        let pieces = hash_pieces(base_path, &tr_files, chunk_size);
+        let pieces = hash_pieces(base_path, &tr_files, chunk_size)?;
 
-        TrInfo {
+        Ok(TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
             length: if single_file {
                 Some(base_metadata.len() as usize)
@@ -212,15 +277,17 @@ impl TrInfo {
             piece_length: chunk_size,
             pieces,
             private,
-        }
+        })
     }
 
-    pub fn verify(&self, target_path: String) {
+    pub fn verify(&self, target_path: String) -> Result<()> {
         let base_path = Path::new(&target_path);
         let tr_files = match self.files {
             Some(ref files) => files,
             None => &vec![TrFile {
-                length: self.length.unwrap(),
+                length: self
+                    .length
+                    .ok_or_else(|| TorrentError::MissingField("length".to_string()))?,
                 path: Vec::new(),
             }],
         };
@@ -287,7 +354,12 @@ impl TrInfo {
                 } else {
                     base_path.join(tr_file.path.iter().collect::<PathBuf>())
                 };
-                let f_path_str = f_path.to_str().unwrap().to_string();
+                let f_path_str = f_path
+                    .to_str()
+                    .ok_or_else(|| {
+                        TorrentError::InvalidPath("Path contains invalid UTF-8".to_string())
+                    })?
+                    .to_string();
                 if !file_status_map.contains_key(&f_path_str) {
                     let f_meta = metadata(&f_path);
                     if f_meta.is_err() || f_meta.unwrap().len() != tr_file.length as u64 {
@@ -313,10 +385,10 @@ impl TrInfo {
                 } else {
                     base_path.join(tr_file.path.iter().collect::<PathBuf>())
                 };
-                let mut f: File = File::open(f_path).unwrap();
-                f.seek(SeekFrom::Start(*file_offset as u64)).unwrap();
+                let mut f = File::open(f_path)?;
+                f.seek(SeekFrom::Start(*file_offset as u64))?;
                 let mut buf = vec![0u8; *length];
-                let n = f.read(&mut buf).unwrap();
+                let n = f.read(&mut buf)?;
                 if n != *length {
                     buf.truncate(n);
                 }
@@ -344,7 +416,10 @@ impl TrInfo {
             for file_index in failed_files {
                 let tr_file = &tr_files[file_index];
                 let rel_path = if tr_file.path.is_empty() {
-                    self.name.as_ref().unwrap().to_string()
+                    self.name
+                        .as_ref()
+                        .ok_or_else(|| TorrentError::MissingField("name".to_string()))?
+                        .to_string()
                 } else {
                     tr_file.path.join("/")
                 };
@@ -362,6 +437,7 @@ impl TrInfo {
                 println!("- Piece {piece_index}");
             }
         }
+        Ok(())
     }
 
     fn bencode(&self) -> Vec<u8> {
@@ -422,17 +498,23 @@ impl Torrent {
         }
     }
 
-    pub fn create_torrent(&mut self, target_path: String, piece_size: u64, private: bool) {
-        let info = TrInfo::new(target_path, piece_size, private);
+    pub fn create_torrent(
+        &mut self,
+        target_path: String,
+        piece_size: u64,
+        private: bool,
+    ) -> Result<()> {
+        let info = TrInfo::new(target_path, piece_size, private)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
+        Ok(())
     }
 
     pub fn write_to_file(&self, torrent_path: String, force: bool) -> std::io::Result<()> {
         if !force && Path::new(&torrent_path).exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                "File already exists",
+                "File already exists, use -f to overwrite",
             ));
         }
         let mut file = File::create(torrent_path)?;
@@ -440,7 +522,7 @@ impl Torrent {
         Ok(())
     }
 
-    pub fn read_torrent(tr_path: String) -> Result<Self, String> {
+    pub fn read_torrent(tr_path: String) -> Result<Self> {
         enum Bencode<'a> {
             Int(usize),
             UInt(i64),
@@ -449,10 +531,10 @@ impl Torrent {
             Dict(HashMap<String, Bencode<'a>>),
         }
 
-        let bcode = read(&tr_path).map_err(|e| format!("failed to read file: {e}"))?;
+        let bcode = read(&tr_path)?;
         let mut pos = 0;
 
-        fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> Result<Bencode<'a>, String> {
+        fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> Result<Bencode<'a>> {
             match data.get(*pos) {
                 Some(b'i') => {
                     *pos += 1;
@@ -488,10 +570,14 @@ impl Torrent {
                     let mut map = HashMap::new();
                     while data.get(*pos) != Some(&b'e') {
                         let key = match parse_bencode(data, pos)? {
-                            Bencode::Bytes(b) => {
-                                String::from_utf8(b.to_vec()).map_err(|_| "invalid utf8 key")?
+                            Bencode::Bytes(b) => String::from_utf8(b.to_vec()).map_err(|_| {
+                                TorrentError::InvalidTorrent("invalid utf8 key".to_string())
+                            })?,
+                            _ => {
+                                return Err(TorrentError::InvalidTorrent(
+                                    "dict key not string".to_string(),
+                                ));
                             }
-                            _ => return Err("dict key not string".into()),
                         };
                         let val = parse_bencode(data, pos)?;
                         map.insert(key, val);
@@ -505,7 +591,9 @@ impl Torrent {
                         *pos += 1;
                     }
                     if *pos >= data.len() {
-                        return Err("truncated string length".into());
+                        return Err(TorrentError::InvalidTorrent(
+                            "truncated string length".to_string(),
+                        ));
                     }
                     let len_str = std::str::from_utf8(&data[start..*pos])
                         .map_err(|_| "invalid utf8 length")?;
@@ -513,7 +601,7 @@ impl Torrent {
                     *pos += 1;
                     let end = *pos + len;
                     if end > data.len() {
-                        return Err("truncated string".into());
+                        return Err(TorrentError::InvalidTorrent("truncated string".to_string()));
                     }
                     let slice = &data[*pos..end];
                     *pos = end;
@@ -527,12 +615,20 @@ impl Torrent {
         let root = parse_bencode(&bcode, &mut pos)?;
         let tr_dict = match root {
             Bencode::Dict(m) => m,
-            _ => return Err("torrent root is not a dictionary".into()),
+            _ => {
+                return Err(TorrentError::InvalidTorrent(
+                    "torrent root is not a dictionary".to_string(),
+                ));
+            }
         };
 
         let info_dict = match tr_dict.get("info") {
             Some(Bencode::Dict(m)) => m,
-            _ => return Err("missing info dict".into()),
+            _ => {
+                return Err(TorrentError::InvalidTorrent(
+                    "missing info dict".to_string(),
+                ));
+            }
         };
 
         let tr_files = match info_dict.get("files") {
@@ -542,19 +638,27 @@ impl Torrent {
                     if let Bencode::Dict(m) = file {
                         let length = match m.get("length") {
                             Some(Bencode::Int(i)) => *i,
-                            _ => return Err("file length invalid".into()),
+                            _ => {
+                                return Err(TorrentError::InvalidTorrent(
+                                    "file length invalid".to_string(),
+                                ));
+                            }
                         };
                         let path = match m.get("path") {
                             Some(Bencode::List(parts)) => {
                                 let mut ps = Vec::new();
                                 for part in parts {
                                     if let Bencode::Bytes(b) = part {
-                                        ps.push(String::from_utf8(b.to_vec()).unwrap());
+                                        ps.push(String::from_utf8(b.to_vec())?);
                                     }
                                 }
                                 ps
                             }
-                            _ => return Err("file path invalid".into()),
+                            _ => {
+                                return Err(TorrentError::InvalidTorrent(
+                                    "file path invalid".to_string(),
+                                ));
+                            }
                         };
                         out.push(TrFile { length, path });
                     }
@@ -571,16 +675,20 @@ impl Torrent {
                 _ => None,
             },
             name: match info_dict.get("name") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             piece_length: match info_dict.get("piece length") {
                 Some(Bencode::Int(i)) => *i,
-                _ => return Err("piece length missing".into()),
+                _ => {
+                    return Err(TorrentError::InvalidTorrent(
+                        "piece length missing".to_string(),
+                    ));
+                }
             },
             pieces: match info_dict.get("pieces") {
                 Some(Bencode::Bytes(b)) => b.to_vec(),
-                _ => return Err("pieces missing".into()),
+                _ => return Err(TorrentError::InvalidTorrent("pieces missing".to_string())),
             },
             private: match info_dict.get("private") {
                 Some(Bencode::Int(i)) => *i != 0,
@@ -590,7 +698,7 @@ impl Torrent {
 
         Ok(Torrent {
             announce: match tr_dict.get("announce") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             announce_list: match tr_dict.get("announce-list") {
@@ -603,14 +711,22 @@ impl Torrent {
                                 for url in urls {
                                     match url {
                                         Bencode::Bytes(b) => {
-                                            tier_list.push(String::from_utf8(b.to_vec()).unwrap())
+                                            tier_list.push(String::from_utf8(b.to_vec())?)
                                         }
-                                        _ => return Err("Announce URL is not a string".into()),
+                                        _ => {
+                                            return Err(TorrentError::InvalidTorrent(
+                                                "Announce URL is not a string".to_string(),
+                                            ));
+                                        }
                                     }
                                 }
                                 alist.push(tier_list);
                             }
-                            _ => return Err("Announce tier is not a list".into()),
+                            _ => {
+                                return Err(TorrentError::InvalidTorrent(
+                                    "Announce tier is not a list".to_string(),
+                                ));
+                            }
                         }
                     }
                     Some(alist)
@@ -618,11 +734,11 @@ impl Torrent {
                 _ => None,
             },
             comment: match tr_dict.get("comment") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             created_by: match tr_dict.get("created by") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             creation_date: match tr_dict.get("creation date") {
@@ -631,11 +747,11 @@ impl Torrent {
                 _ => None,
             },
             encoding: match tr_dict.get("encoding") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             hash: match tr_dict.get("hash") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec()).unwrap()),
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             info: Some(tr_info),
@@ -685,7 +801,7 @@ impl Torrent {
             bcode.extend(bencode_string("info"));
             bcode.extend(self.info.as_ref().unwrap().bencode());
         } else {
-            panic!("info dict is missing");
+            eprintln!("Warning: info dict is missing, creating empty bencode");
         }
         if self.hash.is_some() {
             bcode.extend(bencode_string("hash"));
@@ -698,85 +814,92 @@ impl Torrent {
 
 impl fmt::Display for Torrent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let info = self.info.as_ref().unwrap();
-
         writeln!(f, "Torrent Info:")?;
-        if let Some(name) = &info.name {
-            writeln!(f, "  Name: {name}")?;
-        }
-        if let Some(announce_list) = &self.announce_list {
-            writeln!(f, "  Announce List:")?;
-            let pad = if announce_list.len() >= 10 { 2 } else { 1 };
-            let mut shown = 0;
-            let mut truncated = false;
-            for (tier_id, tier) in announce_list.iter().enumerate() {
-                let tier_str = if pad == 2 {
-                    format!("{tier_id:02}")
-                } else {
-                    format!("{tier_id}")
-                };
-                for url in tier {
-                    if shown < 20 {
-                        writeln!(f, "    Tier {tier_str}: {url}")?;
-                        shown += 1;
-                    } else {
-                        truncated = true;
-                        break;
+
+        match &self.info {
+            Some(info) => {
+                if let Some(name) = &info.name {
+                    writeln!(f, "  Name: {name}")?;
+                }
+
+                if let Some(announce_list) = &self.announce_list {
+                    writeln!(f, "  Announce List:")?;
+                    let pad = if announce_list.len() >= 10 { 2 } else { 1 };
+                    let mut shown = 0;
+                    let mut truncated = false;
+                    for (tier_id, tier) in announce_list.iter().enumerate() {
+                        let tier_str = if pad == 2 {
+                            format!("{tier_id:02}")
+                        } else {
+                            format!("{tier_id}")
+                        };
+                        for url in tier {
+                            if shown < 20 {
+                                writeln!(f, "    Tier {tier_str}: {url}")?;
+                                shown += 1;
+                            } else {
+                                truncated = true;
+                                break;
+                            }
+                        }
+                        if truncated {
+                            break;
+                        }
+                    }
+                    if truncated {
+                        writeln!(f, "    Truncated at 20 announces...")?;
                     }
                 }
-                if truncated {
-                    break;
+
+                if let Some(comment) = &self.comment {
+                    writeln!(f, "  Comment: {comment}")?;
+                }
+                if let Some(created_by) = &self.created_by {
+                    writeln!(f, "  Created by: {created_by}")?;
+                }
+                if let Some(date) = self.creation_date {
+                    let dt = Local
+                        .timestamp_opt(date, 0)
+                        .unwrap()
+                        .format("%Y-%m-%d %H:%M:%S");
+                    writeln!(f, "  Creation date: {date} [{dt}]")?;
+                }
+                if let Some(encoding) = &self.encoding {
+                    writeln!(f, "  Encoding: {encoding}")?;
+                }
+                if let Some(hash) = &self.hash {
+                    writeln!(f, "  Hash: {hash}")?;
+                }
+
+                writeln!(f, "  Piece length: {}", info.piece_length)?;
+                writeln!(f, "  Private: {}", info.private)?;
+
+                if let Some(files) = &info.files {
+                    writeln!(f, "  Files (RelPath [Length]):")?;
+                    let mut shown = 0;
+                    let mut truncated = false;
+                    for file in files {
+                        if shown < 100 {
+                            let path_str = file.path.join("/");
+                            writeln!(f, "    - {path_str} [{} bytes]", file.length)?;
+                            shown += 1;
+                        } else {
+                            truncated = true;
+                            break;
+                        }
+                    }
+                    if truncated {
+                        writeln!(f, "    Truncated at 100 files...")?;
+                    }
+                } else if let Some(length) = info.length {
+                    writeln!(f, "  Length: {length}")?;
                 }
             }
-            if truncated {
-                writeln!(f, "    Truncated at 20 announces...")?;
+            None => {
+                writeln!(f, "  [No torrent info available]")?;
             }
         }
-        if let Some(comment) = &self.comment {
-            writeln!(f, "  Comment: {comment}")?;
-        }
-        if let Some(created_by) = &self.created_by {
-            writeln!(f, "  Created by: {created_by}")?;
-        }
-        if let Some(date) = self.creation_date {
-            let dt = Local
-                .timestamp_opt(date, 0)
-                .unwrap()
-                .format("%Y-%m-%d %H:%M:%S");
-            writeln!(f, "  Creation date: {date} [{dt}]")?;
-        }
-        if let Some(encoding) = &self.encoding {
-            writeln!(f, "  Encoding: {encoding}")?;
-        }
-        if let Some(hash) = &self.hash {
-            writeln!(f, "  Hash: {hash}")?;
-        }
-        writeln!(
-            f,
-            "  Piece length: {piece_length}",
-            piece_length = info.piece_length
-        )?;
-        writeln!(f, "  Private: {private}", private = info.private)?;
-        if let Some(files) = &info.files {
-            writeln!(f, "  Files (RelPath [Length]):")?;
-            let mut shown = 0;
-            let mut truncated = false;
-            for file in files {
-                if shown < 100 {
-                    let path_str = file.path.join("/");
-                    writeln!(f, "    - {path_str} [{length} bytes]", length = file.length)?;
-                    shown += 1;
-                } else {
-                    truncated = true;
-                    break;
-                }
-            }
-            if truncated {
-                writeln!(f, "    Truncated at 100 files...")?;
-            }
-        } else if let Some(length) = info.length {
-            writeln!(f, "  Length: {length}")?;
-        }
+
         Ok(())
     }
 }

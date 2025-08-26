@@ -48,8 +48,13 @@ fn main() {
             let input = &inputs[0];
             if input.ends_with(".torrent") {
                 // show info
-                let torrent = torrent::Torrent::read_torrent(input.clone()).unwrap();
-                println!("{torrent}");
+                match torrent::Torrent::read_torrent(input.clone()) {
+                    Ok(torrent) => println!("{torrent}"),
+                    Err(e) => {
+                        eprintln!("Error reading torrent file: {e}");
+                        std::process::exit(1);
+                    }
+                }
             } else {
                 // create mode
                 let announce_list = match args.announce {
@@ -74,11 +79,20 @@ fn main() {
                         env!("CARGO_PKG_NAME"),
                         env!("CARGO_PKG_VERSION")
                     )),
-                    if args.no_date { None } else { Some(chrono::Local::now().timestamp()) },
+                    if args.no_date {
+                        None
+                    } else {
+                        Some(chrono::Local::now().timestamp())
+                    },
                     Some(String::from("UTF-8")),
                 );
 
-                torrent.create_torrent(input.clone(), args.piece_size as u64, args.private);
+                if let Err(e) =
+                    torrent.create_torrent(input.clone(), args.piece_size as u64, args.private)
+                {
+                    eprintln!("Error creating torrent: {e}");
+                    std::process::exit(1);
+                }
 
                 torrent
                     .write_to_file(format!("{input}.torrent"), args.force)
@@ -98,9 +112,18 @@ fn main() {
                 return;
             };
 
-            let torrent = torrent::Torrent::read_torrent(torrent_path).unwrap();
+            let torrent = match torrent::Torrent::read_torrent(torrent_path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Error reading torrent file: {e}");
+                    std::process::exit(1);
+                }
+            };
             let tr_info = torrent.get_info().unwrap();
-            tr_info.verify(target_path);
+            if let Err(e) = tr_info.verify(target_path) {
+                eprintln!("Error during verification: {e}");
+                std::process::exit(1);
+            }
         }
         Some(ref _inputs) => {
             eprintln!(
