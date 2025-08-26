@@ -161,12 +161,9 @@ fn hash_pieces(
     // Setup progress bar only if not quiet
     let pb = if !quiet {
         let pb = ProgressBar::new(estimated_pieces as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} pieces ({percent}%)")
-                .unwrap()
-                .progress_chars("#>-")
-        );
+        pb.set_style(ProgressStyle::with_template("{msg}\n{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
+        .unwrap()
+        .progress_chars("#>-"));
         Some(pb)
     } else {
         None
@@ -241,7 +238,8 @@ fn hash_pieces(
     }
 
     if let Some(pb) = pb {
-        pb.finish_with_message(format!("Processed {total_files} files"));
+        let elapsed = pb.elapsed();
+        pb.finish_with_message(format!("Processed {total_files} files in {elapsed:.2?}"));
     }
 
     Ok(pieces)

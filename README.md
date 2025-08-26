@@ -10,5 +10,6 @@ A utility for working with torrent files based on Rust.
   - [x] Verify
 - [x] Preformance
 - [x] CLI
-- [ ] progress bar
-- [ ] CLI optim
+- [x] progress bar
+- [x] CLI optim
+- [ ] load config file
