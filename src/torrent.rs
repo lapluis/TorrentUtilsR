@@ -9,6 +9,8 @@ use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::{fmt, vec};
 use walkdir::WalkDir;
 
+use crate::utils;
+
 #[derive(Debug)]
 pub enum TorrentError {
     Io(std::io::Error),
@@ -268,7 +270,7 @@ impl TrFile {
 }
 
 impl TrInfo {
-    fn new(target_path: String, piece_size: u64, private: bool, quiet: bool) -> Result<TrInfo> {
+    fn new(target_path: String, piece_length: usize, private: bool, quiet: bool) -> Result<TrInfo> {
         let base_path = Path::new(&target_path);
         let name = base_path
             .file_name()
@@ -317,8 +319,7 @@ impl TrInfo {
             ));
         }
 
-        let chunk_size: usize = 1 << piece_size;
-        let pieces = hash_pieces(base_path, &tr_files, chunk_size, quiet)?;
+        let pieces = hash_pieces(base_path, &tr_files, piece_length, quiet)?;
 
         Ok(TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
@@ -328,7 +329,7 @@ impl TrInfo {
                 None
             },
             name: Some(name.to_string()),
-            piece_length: chunk_size,
+            piece_length,
             pieces,
             private,
         })
@@ -519,6 +520,12 @@ impl TrInfo {
         Ok(())
     }
 
+    pub fn get_name(&self) -> Result<String> {
+        self.name
+            .clone()
+            .ok_or_else(|| TorrentError::MissingField("name".to_string()))
+    }
+
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
@@ -580,11 +587,11 @@ impl Torrent {
     pub fn create_torrent(
         &mut self,
         target_path: String,
-        piece_size: u64,
+        piece_length: usize,
         private: bool,
         quiet: bool,
     ) -> Result<()> {
-        let info = TrInfo::new(target_path, piece_size, private, quiet)?;
+        let info = TrInfo::new(target_path, piece_length, private, quiet)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())
@@ -951,7 +958,12 @@ impl fmt::Display for Torrent {
                     writeln!(f, "  Hash: {hash}")?;
                 }
 
-                writeln!(f, "  Piece length: {}", info.piece_length)?;
+                writeln!(
+                    f,
+                    "  Piece length: {} [{}]",
+                    info.piece_length,
+                    utils::human_size(info.piece_length)
+                )?;
                 writeln!(f, "  Private: {}", info.private)?;
 
                 if let Some(files) = &info.files {
@@ -961,7 +973,12 @@ impl fmt::Display for Torrent {
                     for file in files {
                         if shown < 100 {
                             let path_str = file.path.join("/");
-                            writeln!(f, "    - {path_str} [{} bytes]", file.length)?;
+                            writeln!(
+                                f,
+                                "    - {path_str} [{} bytes ({})]",
+                                file.length,
+                                utils::human_size(file.length)
+                            )?;
                             shown += 1;
                         } else {
                             truncated = true;
