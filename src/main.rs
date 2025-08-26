@@ -14,7 +14,7 @@ struct Args {
     #[arg(short = 'l', long = "piece-size", default_value_t = 16)]
     piece_size: u32,
 
-    /// Announce URLs
+    /// Announce URLs, multiple allowed
     #[arg(short = 'a', long)]
     announce: Option<Vec<String>>,
 
@@ -25,6 +25,10 @@ struct Args {
     /// Comment
     #[arg(short = 'c', long)]
     comment: Option<String>,
+
+    /// No creation date
+    #[arg(short = 'd', long)]
+    no_date: bool,
 
     /// Force overwrite
     #[arg(short = 'f', long)]
@@ -70,14 +74,14 @@ fn main() {
                         env!("CARGO_PKG_NAME"),
                         env!("CARGO_PKG_VERSION")
                     )),
-                    Some(chrono::offset::Utc::now().timestamp()),
+                    if args.no_date { None } else { Some(chrono::Local::now().timestamp()) },
                     Some(String::from("UTF-8")),
                 );
 
                 torrent.create_torrent(input.clone(), args.piece_size as u64, args.private);
 
                 torrent
-                    .write_to_file(format!("{input}.torrent"))
+                    .write_to_file(format!("{input}.torrent"), args.force)
                     .expect("Failed to write torrent file");
             }
         }

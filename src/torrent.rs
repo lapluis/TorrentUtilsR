@@ -1,4 +1,4 @@
-use chrono::DateTime;
+use chrono::{TimeZone, Local};
 use sha1::{Digest, Sha1};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
@@ -428,7 +428,13 @@ impl Torrent {
         self.info = Some(info);
     }
 
-    pub fn write_to_file(&self, torrent_path: String) -> std::io::Result<()> {
+    pub fn write_to_file(&self, torrent_path: String, force: bool) -> std::io::Result<()> {
+        if !force && Path::new(&torrent_path).exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "File already exists",
+            ));
+        }
         let mut file = File::create(torrent_path)?;
         file.write_all(&self.bencode())?;
         Ok(())
@@ -733,13 +739,11 @@ impl fmt::Display for Torrent {
             writeln!(f, "  Created by: {created_by}")?;
         }
         if let Some(date) = self.creation_date {
-            let dt = DateTime::from_timestamp(date, 0);
-            if let Some(dt) = dt {
-                let dt = dt.format("%Y-%m-%d %H:%M:%S");
-                writeln!(f, "  Creation date: {date} [{dt}]")?;
-            } else {
-                writeln!(f, "  Creation date: {date} [invalid]")?;
-            }
+            let dt = Local
+                .timestamp_opt(date, 0)
+                .unwrap()
+                .format("%Y-%m-%d %H:%M:%S");
+            writeln!(f, "  Creation date: {date} [{dt}]")?;
         }
         if let Some(encoding) = &self.encoding {
             writeln!(f, "  Encoding: {encoding}")?;
