@@ -1,7 +1,7 @@
 use argh::FromArgs;
 use serde::Deserialize;
 use std::io::{Write, stdin, stdout};
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::process::exit;
 
 mod torrent;
@@ -54,7 +54,7 @@ struct Args {
     input: Vec<String>,
 
     /// config file
-    #[argh(option, short = 'g', default = "String::from(\"config.toml\")")]
+    #[argh(option, short = 'g', default = "get_config_path()")]
     config: String,
 
     /// output path or torrent name (only for create mode)
@@ -96,6 +96,12 @@ struct Args {
     /// wait for Enter key before exiting
     #[argh(switch, short = 'e')]
     wait_exit: bool,
+}
+
+fn get_config_path() -> String {
+    let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new("."));
+    exe_dir.join("config.toml").to_string_lossy().to_string()
 }
 
 fn wait_for_enter(wait: bool) {
