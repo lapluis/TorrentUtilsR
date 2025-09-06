@@ -1,13 +1,11 @@
 use chrono::{Local, TimeZone};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha1::{Digest, Sha1};
-use std::cmp;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, metadata, read};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
-use std::{fmt, vec};
+use std::{cmp, error, fmt, result, string};
 use walkdir::WalkDir;
 
 use crate::utils;
@@ -18,8 +16,8 @@ const MAX_DISPLAYED_ANNOUNCES: usize = 20;
 const MAX_DISPLAYED_FILES: usize = 100;
 
 #[derive(Debug)]
-pub enum TorrentError {
-    Io(std::io::Error),
+pub enum TrError {
+    IO(Error),
     InvalidPath(String),
     InvalidTorrent(String),
     MissingField(String),
@@ -27,46 +25,46 @@ pub enum TorrentError {
     EncodingError(String),
 }
 
-impl fmt::Display for TorrentError {
+impl fmt::Display for TrError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TorrentError::Io(err) => write!(f, "IO error: {err}"),
-            TorrentError::InvalidPath(path) => write!(f, "Invalid path: {path}"),
-            TorrentError::InvalidTorrent(msg) => write!(f, "Invalid torrent: {msg}"),
-            TorrentError::MissingField(field) => write!(f, "Missing field: {field}"),
-            TorrentError::ParseError(msg) => write!(f, "Parse error: {msg}"),
-            TorrentError::EncodingError(msg) => write!(f, "Encoding error: {msg}"),
+            TrError::IO(err) => write!(f, "IO error: {err}"),
+            TrError::InvalidPath(path) => write!(f, "Invalid path: {path}"),
+            TrError::InvalidTorrent(msg) => write!(f, "Invalid torrent: {msg}"),
+            TrError::MissingField(field) => write!(f, "Missing field: {field}"),
+            TrError::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            TrError::EncodingError(msg) => write!(f, "Encoding error: {msg}"),
         }
     }
 }
 
-impl std::error::Error for TorrentError {}
+impl error::Error for TrError {}
 
-impl From<std::io::Error> for TorrentError {
-    fn from(err: std::io::Error) -> Self {
-        TorrentError::Io(err)
+impl From<Error> for TrError {
+    fn from(err: Error) -> Self {
+        TrError::IO(err)
     }
 }
 
-impl From<std::string::FromUtf8Error> for TorrentError {
-    fn from(err: std::string::FromUtf8Error) -> Self {
-        TorrentError::EncodingError(format!("UTF-8 conversion error: {err}"))
+impl From<string::FromUtf8Error> for TrError {
+    fn from(err: string::FromUtf8Error) -> Self {
+        TrError::EncodingError(format!("UTF-8 conversion error: {err}"))
     }
 }
 
-impl From<&str> for TorrentError {
+impl From<&str> for TrError {
     fn from(err: &str) -> Self {
-        TorrentError::ParseError(err.to_string())
+        TrError::ParseError(err.to_string())
     }
 }
 
-impl From<String> for TorrentError {
+impl From<String> for TrError {
     fn from(err: String) -> Self {
-        TorrentError::ParseError(err)
+        TrError::ParseError(err)
     }
 }
 
-pub type Result<T> = std::result::Result<T, TorrentError>;
+pub type TrResult<T> = result::Result<T, TrError>;
 
 pub enum WalkMode {
     Default,
@@ -160,7 +158,7 @@ fn hash_pieces(
     tr_files: &[TrFile],
     chunk_size: usize,
     quiet: bool,
-) -> Result<Vec<u8>> {
+) -> TrResult<Vec<u8>> {
     let mut buf = vec![0u8; BUFFER_SIZE];
     let mut piece_pos = 0usize;
     let mut pieces = Vec::new();
@@ -288,13 +286,13 @@ impl TrInfo {
         private: bool,
         quiet: bool,
         walk_mode: WalkMode,
-    ) -> Result<TrInfo> {
+    ) -> TrResult<TrInfo> {
         let base_path = Path::new(&target_path);
         let name = base_path
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| {
-                TorrentError::InvalidPath(format!("Invalid file name in path: {target_path}"))
+                TrError::InvalidPath(format!("Invalid file name in path: {target_path}"))
             })?;
         let mut single_file = false;
 
@@ -319,11 +317,11 @@ impl TrInfo {
                         .path()
                         .strip_prefix(base_path)
                         .map_err(|_| {
-                            TorrentError::InvalidPath("Failed to create relative path".to_string())
+                            TrError::InvalidPath("Failed to create relative path".to_string())
                         })?
                         .to_str()
                         .ok_or_else(|| {
-                            TorrentError::InvalidPath("Path contains invalid UTF-8".to_string())
+                            TrError::InvalidPath("Path contains invalid UTF-8".to_string())
                         })?
                         .split(MAIN_SEPARATOR)
                         .map(str::to_owned)
@@ -336,7 +334,7 @@ impl TrInfo {
                 }
             }
         } else {
-            return Err(TorrentError::InvalidPath(
+            return Err(TrError::InvalidPath(
                 "Target path is neither a file nor a directory".to_string(),
             ));
         }
@@ -358,21 +356,21 @@ impl TrInfo {
                         match (a.path.get(i), b.path.get(i)) {
                             (Some(seg_a), Some(seg_b)) => {
                                 let lower_cmp = seg_a.to_lowercase().cmp(&seg_b.to_lowercase());
-                                if lower_cmp != Ordering::Equal {
+                                if lower_cmp != cmp::Ordering::Equal {
                                     return lower_cmp;
                                 }
                                 let orig_cmp = seg_a.cmp(seg_b);
-                                if orig_cmp != Ordering::Equal {
+                                if orig_cmp != cmp::Ordering::Equal {
                                     return orig_cmp;
                                 }
                             }
-                            (None, Some(_)) => return Ordering::Less,
-                            (Some(_), None) => return Ordering::Greater,
+                            (None, Some(_)) => return cmp::Ordering::Less,
+                            (Some(_), None) => return cmp::Ordering::Greater,
                             (None, None) => break,
                         }
                     }
 
-                    Ordering::Equal
+                    cmp::Ordering::Equal
                 });
             }
             WalkMode::BreadthFirstLevel => {
@@ -383,28 +381,28 @@ impl TrInfo {
                         match (a.path.get(i), b.path.get(i)) {
                             (Some(seg_a), Some(seg_b)) => {
                                 if i == a.path.len() - 1 && i < b.path.len() - 1 {
-                                    return Ordering::Less;
+                                    return cmp::Ordering::Less;
                                 }
                                 if i == b.path.len() - 1 && i < a.path.len() - 1 {
-                                    return Ordering::Greater;
+                                    return cmp::Ordering::Greater;
                                 }
 
                                 let lower_cmp = seg_a.to_lowercase().cmp(&seg_b.to_lowercase());
-                                if lower_cmp != Ordering::Equal {
+                                if lower_cmp != cmp::Ordering::Equal {
                                     return lower_cmp;
                                 }
                                 let orig_cmp = seg_a.cmp(seg_b);
-                                if orig_cmp != Ordering::Equal {
+                                if orig_cmp != cmp::Ordering::Equal {
                                     return orig_cmp;
                                 }
                             }
-                            (None, Some(_)) => return Ordering::Less,
-                            (Some(_), None) => return Ordering::Greater,
+                            (None, Some(_)) => return cmp::Ordering::Less,
+                            (Some(_), None) => return cmp::Ordering::Greater,
                             (None, None) => break,
                         }
                     }
 
-                    Ordering::Equal
+                    cmp::Ordering::Equal
                 });
             }
             WalkMode::FileSize => {
@@ -428,14 +426,14 @@ impl TrInfo {
         })
     }
 
-    pub fn verify(&self, target_path: String) -> Result<()> {
+    pub fn verify(&self, target_path: String) -> TrResult<()> {
         let base_path = Path::new(&target_path);
         let tr_files = match self.files {
             Some(ref files) => files,
             None => &vec![TrFile {
                 length: self
                     .length
-                    .ok_or_else(|| TorrentError::MissingField("length".to_string()))?,
+                    .ok_or_else(|| TrError::MissingField("length".to_string()))?,
                 path: Vec::new(),
             }],
         };
@@ -481,9 +479,7 @@ impl TrInfo {
                 };
                 let f_path_str = f_path
                     .to_str()
-                    .ok_or_else(|| {
-                        TorrentError::InvalidPath("Path contains invalid UTF-8".to_string())
-                    })?
+                    .ok_or_else(|| TrError::InvalidPath("Path contains invalid UTF-8".to_string()))?
                     .to_string();
                 if !file_status_map.contains_key(&f_path_str) {
                     let f_meta = metadata(&f_path);
@@ -561,7 +557,7 @@ impl TrInfo {
                 let rel_path = if tr_file.path.is_empty() {
                     self.name
                         .as_ref()
-                        .ok_or_else(|| TorrentError::MissingField("name".to_string()))?
+                        .ok_or_else(|| TrError::MissingField("name".to_string()))?
                         .to_string()
                 } else {
                     tr_file.path.join("/")
@@ -577,10 +573,10 @@ impl TrInfo {
         Ok(())
     }
 
-    pub fn get_name(&self) -> Result<String> {
+    pub fn get_name(&self) -> TrResult<String> {
         self.name
             .clone()
-            .ok_or_else(|| TorrentError::MissingField("name".to_string()))
+            .ok_or_else(|| TrError::MissingField("name".to_string()))
     }
 
     fn bencode(&self) -> Vec<u8> {
@@ -648,17 +644,17 @@ impl Torrent {
         private: bool,
         quiet: bool,
         walk_mode: WalkMode,
-    ) -> Result<()> {
+    ) -> TrResult<()> {
         let info = TrInfo::new(target_path, piece_length, private, quiet, walk_mode)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())
     }
 
-    pub fn write_to_file(&self, torrent_path: String, force: bool) -> std::io::Result<()> {
+    pub fn write_to_file(&self, torrent_path: String, force: bool) -> Result<()> {
         if !force && Path::new(&torrent_path).exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
+            return Err(Error::new(
+                ErrorKind::AlreadyExists,
                 "File already exists, use -f to overwrite",
             ));
         }
@@ -667,7 +663,7 @@ impl Torrent {
         Ok(())
     }
 
-    pub fn read_torrent(tr_path: String) -> Result<Self> {
+    pub fn read_torrent(tr_path: String) -> TrResult<Self> {
         enum Bencode<'a> {
             Int(usize),
             UInt(i64),
@@ -679,7 +675,7 @@ impl Torrent {
         let bcode = read(&tr_path)?;
         let mut pos = 0;
 
-        fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> Result<Bencode<'a>> {
+        fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Bencode<'a>> {
             match data.get(*pos) {
                 Some(b'i') => {
                     *pos += 1;
@@ -716,10 +712,10 @@ impl Torrent {
                     while data.get(*pos) != Some(&b'e') {
                         let key = match parse_bencode(data, pos)? {
                             Bencode::Bytes(b) => String::from_utf8(b.to_vec()).map_err(|_| {
-                                TorrentError::InvalidTorrent("invalid utf8 key".to_string())
+                                TrError::InvalidTorrent("invalid utf8 key".to_string())
                             })?,
                             _ => {
-                                return Err(TorrentError::InvalidTorrent(
+                                return Err(TrError::InvalidTorrent(
                                     "dict key not string".to_string(),
                                 ));
                             }
@@ -736,7 +732,7 @@ impl Torrent {
                         *pos += 1;
                     }
                     if *pos >= data.len() {
-                        return Err(TorrentError::InvalidTorrent(
+                        return Err(TrError::InvalidTorrent(
                             "truncated string length".to_string(),
                         ));
                     }
@@ -746,7 +742,7 @@ impl Torrent {
                     *pos += 1;
                     let end = *pos + len;
                     if end > data.len() {
-                        return Err(TorrentError::InvalidTorrent("truncated string".to_string()));
+                        return Err(TrError::InvalidTorrent("truncated string".to_string()));
                     }
                     let slice = &data[*pos..end];
                     *pos = end;
@@ -761,7 +757,7 @@ impl Torrent {
         let tr_dict = match root {
             Bencode::Dict(m) => m,
             _ => {
-                return Err(TorrentError::InvalidTorrent(
+                return Err(TrError::InvalidTorrent(
                     "torrent root is not a dictionary".to_string(),
                 ));
             }
@@ -770,9 +766,7 @@ impl Torrent {
         let info_dict = match tr_dict.get("info") {
             Some(Bencode::Dict(m)) => m,
             _ => {
-                return Err(TorrentError::InvalidTorrent(
-                    "missing info dict".to_string(),
-                ));
+                return Err(TrError::InvalidTorrent("missing info dict".to_string()));
             }
         };
 
@@ -784,7 +778,7 @@ impl Torrent {
                         let length = match m.get("length") {
                             Some(Bencode::Int(i)) => *i,
                             _ => {
-                                return Err(TorrentError::InvalidTorrent(
+                                return Err(TrError::InvalidTorrent(
                                     "file length invalid".to_string(),
                                 ));
                             }
@@ -800,7 +794,7 @@ impl Torrent {
                                 ps
                             }
                             _ => {
-                                return Err(TorrentError::InvalidTorrent(
+                                return Err(TrError::InvalidTorrent(
                                     "file path invalid".to_string(),
                                 ));
                             }
@@ -826,14 +820,12 @@ impl Torrent {
             piece_length: match info_dict.get("piece length") {
                 Some(Bencode::Int(i)) => *i,
                 _ => {
-                    return Err(TorrentError::InvalidTorrent(
-                        "piece length missing".to_string(),
-                    ));
+                    return Err(TrError::InvalidTorrent("piece length missing".to_string()));
                 }
             },
             pieces: match info_dict.get("pieces") {
                 Some(Bencode::Bytes(b)) => b.to_vec(),
-                _ => return Err(TorrentError::InvalidTorrent("pieces missing".to_string())),
+                _ => return Err(TrError::InvalidTorrent("pieces missing".to_string())),
             },
             private: match info_dict.get("private") {
                 Some(Bencode::Int(i)) => *i != 0,
@@ -859,7 +851,7 @@ impl Torrent {
                                             tier_list.push(String::from_utf8(b.to_vec())?)
                                         }
                                         _ => {
-                                            return Err(TorrentError::InvalidTorrent(
+                                            return Err(TrError::InvalidTorrent(
                                                 "Announce URL is not a string".to_string(),
                                             ));
                                         }
@@ -868,7 +860,7 @@ impl Torrent {
                                 alist.push(tier_list);
                             }
                             _ => {
-                                return Err(TorrentError::InvalidTorrent(
+                                return Err(TrError::InvalidTorrent(
                                     "Announce tier is not a list".to_string(),
                                 ));
                             }
