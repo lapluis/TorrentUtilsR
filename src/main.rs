@@ -7,7 +7,7 @@ mod utils;
 
 const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes = 64 KiB
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct Config {
     private: bool,
     piece_length: usize, // in bytes
@@ -16,7 +16,7 @@ struct Config {
 }
 
 /// A utility for working with torrent files.
-#[derive(FromArgs, Debug)]
+#[derive(FromArgs)]
 #[argh(help_triggers("-h", "--help"))]
 struct Args {
     /// torrent/target path or both
@@ -66,11 +66,6 @@ struct Args {
 
 fn main() {
     let args: Args = argh::from_env();
-
-    #[cfg(debug_assertions)]
-    {
-        println!("{args:?}");
-    }
 
     match args.input.len() {
         1 => {
