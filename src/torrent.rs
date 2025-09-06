@@ -1,5 +1,6 @@
 use chrono::{Local, TimeZone};
 use indicatif::{ProgressBar, ProgressStyle};
+use natlex_sort::nat_lex_cmp_ignore;
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, metadata, read};
@@ -350,18 +351,12 @@ impl TrInfo {
             }
             WalkMode::BreadthFirstAlphabetical => {
                 tr_files.sort_by(|a, b| {
-                    let max_len = a.path.len().max(b.path.len());
-
-                    for i in 0..max_len {
+                    for i in 0..cmp::max(a.path.len(), b.path.len()) {
                         match (a.path.get(i), b.path.get(i)) {
                             (Some(seg_a), Some(seg_b)) => {
-                                let lower_cmp = seg_a.to_lowercase().cmp(&seg_b.to_lowercase());
-                                if lower_cmp != cmp::Ordering::Equal {
-                                    return lower_cmp;
-                                }
-                                let orig_cmp = seg_a.cmp(seg_b);
-                                if orig_cmp != cmp::Ordering::Equal {
-                                    return orig_cmp;
+                                let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
+                                if cmp_res != cmp::Ordering::Equal {
+                                    return cmp_res;
                                 }
                             }
                             (None, Some(_)) => return cmp::Ordering::Less,
@@ -375,9 +370,7 @@ impl TrInfo {
             }
             WalkMode::BreadthFirstLevel => {
                 tr_files.sort_by(|a, b| {
-                    let max_len = a.path.len().max(b.path.len());
-
-                    for i in 0..max_len {
+                    for i in 0..cmp::max(a.path.len(), b.path.len()) {
                         match (a.path.get(i), b.path.get(i)) {
                             (Some(seg_a), Some(seg_b)) => {
                                 if i == a.path.len() - 1 && i < b.path.len() - 1 {
@@ -386,14 +379,9 @@ impl TrInfo {
                                 if i == b.path.len() - 1 && i < a.path.len() - 1 {
                                     return cmp::Ordering::Greater;
                                 }
-
-                                let lower_cmp = seg_a.to_lowercase().cmp(&seg_b.to_lowercase());
-                                if lower_cmp != cmp::Ordering::Equal {
-                                    return lower_cmp;
-                                }
-                                let orig_cmp = seg_a.cmp(seg_b);
-                                if orig_cmp != cmp::Ordering::Equal {
-                                    return orig_cmp;
+                                let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
+                                if cmp_res != cmp::Ordering::Equal {
+                                    return cmp_res;
                                 }
                             }
                             (None, Some(_)) => return cmp::Ordering::Less,

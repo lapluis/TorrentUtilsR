@@ -10,6 +10,7 @@ dependencies = [
  "chrono",
  "hex",
  "indicatif",
+ "natlex_sort",
  "serde",
  "sha1",
  "toml",
@@ -263,6 +264,21 @@ name = "log"
 version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
+
+[[package]]
+name = "natlex_sort"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40b14bf5f914a43e8373e0b6aea1f1c80024ef1721c8521478e0ca00a48f8aaf"
+dependencies = [
+ "natord",
+]
+
+[[package]]
+name = "natord"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 
 [[package]]
 name = "num-traits"
