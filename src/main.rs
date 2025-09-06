@@ -129,7 +129,9 @@ fn main() {
             toml::from_str::<Config>(&content)
                 .map_err(|_| ())
                 .inspect(|_| {
-                    println!("Config loaded.");
+                    if !args.quiet {
+                        println!("I: Config loaded.");
+                    }
                 })
         })
         .unwrap_or_default();
@@ -141,6 +143,10 @@ fn main() {
             let input = &args.input[0];
             if input.ends_with(".torrent") {
                 // show info
+                if !args.quiet {
+                    println!("I: Info mode.");
+                    println!("Torrent: {input}");
+                }
                 match Torrent::read_torrent(input.clone()) {
                     Ok(torrent) => {
                         if args.print_tree {
@@ -157,6 +163,9 @@ fn main() {
                 }
             } else {
                 // create mode
+                if !args.quiet {
+                    println!("I: Create mode.");
+                }
                 config.piece_size = args.piece_size.unwrap_or(config.piece_size);
                 let piece_length = 1usize
                     << match config.piece_size {
@@ -288,9 +297,11 @@ fn main() {
                 wait_for_enter(config.wait_exit);
                 exit(1);
             };
-
-            println!("Target:  {target_path}");
-            println!("Torrent: {torrent_path}");
+            if !args.quiet {
+                println!("I: Verify mode.");
+                println!("Target:  {target_path}");
+                println!("Torrent: {torrent_path}");
+            }
 
             let torrent = match Torrent::read_torrent(torrent_path) {
                 Ok(t) => t,
