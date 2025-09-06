@@ -1,0 +1,10 @@
+wait_exit = true
+walk_mode = 0
+private = false
+piece_size = 22
+tracker_list = [
+    "http://nyaa.tracker.wf:7777/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.opentrackr.org:1337/announce",
+]
