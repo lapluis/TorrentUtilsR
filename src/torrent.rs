@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result as fmtResult};
 use std::fs::{File, read};
-use std::io::{Error as ioError, ErrorKind, Result as ioResult, Write};
+use std::io::{Error as ioError, ErrorKind, Result as ioResult, Write, stdout};
 use std::path::Path;
 
 use chrono::{Local, TimeZone};
 
 use crate::bencode::{bencode_int, bencode_string};
-use crate::tr_file::TrFile;
+use crate::tr_file::{Node, TrFile};
 use crate::tr_info::TrInfo;
 use crate::utils::{TrError, TrResult, human_size};
 
@@ -363,6 +363,28 @@ impl Torrent {
         }
         bcode.push(b'e');
         bcode
+    }
+
+    pub fn print_file_tree(&self) {
+        match &self.info {
+            Some(info) => {
+                if let Some(name) = &info.name {
+                    println!("{}", name);
+                }
+                let _ = stdout().flush();
+                if let Some(files) = &info.files {
+                    let file_tree = Node::build_tree(files);
+                    file_tree.print_tree();
+                } else if let Some(length) = info.length {
+                    println!("  [Single file, {} bytes ({})]", length, human_size(length));
+                } else {
+                    println!("  [No files information available]");
+                }
+            }
+            None => {
+                println!("[No torrent info available]");
+            }
+        }
     }
 }
 

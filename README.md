@@ -45,6 +45,9 @@ Display detailed information about a torrent file:
 
 ```bash
 TorrentUtilsR example.torrent
+
+# Print torrent information with file tree structure
+TorrentUtilsR example.torrent --print-tree
 ```
 
 ### Verifying Torrents
@@ -60,7 +63,7 @@ TorrentUtilsR path/to/data example.torrent
 ### Command Line Options
 
 ```
-Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-w <walk-mode>] [-f] [-q] [-e]
+Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-w <walk-mode>] [-f] [-q] [-t] [-e]
 
 A utility for working with torrent files.
 
@@ -78,6 +81,7 @@ Options:
   -w, --walk-mode <walk-mode> walk mode [default: 0]
   -f, --force                 force overwrite
   -q, --quiet                 hide progress bar and other non-error output
+  -t, --print-tree            print torrent file tree, only for info mode
   -e, --wait-exit             wait for Enter key before exiting
   -h, --help                  display usage information
 ```

@@ -97,6 +97,10 @@ struct Args {
     #[argh(switch, short = 'q')]
     quiet: bool,
 
+    /// print torrent file tree, only for info mode
+    #[argh(switch, short = 't')]
+    print_tree: bool,
+
     /// wait for Enter key before exiting
     #[argh(switch, short = 'e')]
     wait_exit: bool,
@@ -138,7 +142,13 @@ fn main() {
             if input.ends_with(".torrent") {
                 // show info
                 match Torrent::read_torrent(input.clone()) {
-                    Ok(torrent) => println!("{torrent}"),
+                    Ok(torrent) => {
+                        if args.print_tree {
+                            torrent.print_file_tree();
+                        } else {
+                            println!("{torrent}");
+                        }
+                    }
                     Err(e) => {
                         eprintln!("Error reading torrent file: {e}");
                         wait_for_enter(config.wait_exit);
