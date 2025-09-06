@@ -426,7 +426,7 @@ impl TrInfo {
         })
     }
 
-    pub fn verify(&self, target_path: String) -> TrResult<()> {
+    pub fn verify(&self, target_path: String, quiet: bool) -> TrResult<()> {
         let base_path = Path::new(&target_path);
         let tr_files = match self.files {
             Some(ref files) => files,
@@ -467,6 +467,16 @@ impl TrInfo {
         let mut failed_pieces: HashSet<usize> = HashSet::new();
 
         let mut hasher = Sha1::new();
+
+        let pb = if !quiet {
+            let pb = ProgressBar::new(piece_slices.len() as u64);
+            pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+            Some(pb)
+        } else {
+            None
+        };
 
         for (i, piece_hash) in piece_slices.iter().enumerate() {
             let mut files_ok: bool = true;
@@ -526,6 +536,9 @@ impl TrInfo {
                 for (file_index, _, _) in &piece_file_info[i] {
                     failed_files.insert(*file_index);
                 }
+            }
+            if let Some(ref pb) = pb {
+                pb.set_position(i as u64);
             }
         }
 

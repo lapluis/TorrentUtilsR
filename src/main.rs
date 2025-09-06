@@ -313,7 +313,7 @@ fn main() {
                 }
             }
 
-            if let Err(e) = tr_info.verify(target_path) {
+            if let Err(e) = tr_info.verify(target_path, args.quiet) {
                 eprintln!("Error during verification: {e}");
                 wait_for_enter(config.wait_exit);
                 exit(1);
