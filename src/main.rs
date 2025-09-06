@@ -11,13 +11,26 @@ use torrent::{Torrent, WalkMode};
 
 const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes = 64 KiB
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Config {
+    #[serde(default)]
     wait_exit: bool,
+
+    #[serde(default)]
     walk_mode: u8,
+
+    #[serde(default)]
     private: bool,
-    piece_length: usize, // in bytes
+
+    #[serde(default = "def_piece_size")]
+    piece_size: u8,
+
+    #[serde(default)]
     tracker_list: Vec<String>,
+}
+
+fn def_piece_size() -> u8 {
+    DEF_PIECE_SIZE
 }
 
 /// A utility for working with torrent files.
@@ -91,13 +104,9 @@ fn main() {
                 println!("Config loaded.");
             })
         })
-        .unwrap_or_else(|| Config {
-            wait_exit: args.wait_exit,
-            walk_mode: 0,
-            private: args.private,
-            piece_length: 1usize << DEF_PIECE_SIZE,
-            tracker_list: Vec::new(),
-        });
+        .unwrap_or_default();
+
+    config.wait_exit = args.wait_exit || config.wait_exit;
 
     match args.input.len() {
         1 => {
@@ -114,8 +123,8 @@ fn main() {
                 }
             } else {
                 // create mode
-                config.piece_length = match args.piece_size {
-                    Some(n) if (11..=24).contains(&n) => 1usize << n,
+                config.piece_size = match args.piece_size {
+                    Some(n) if (11..=24).contains(&n) => n,
                     Some(n) => {
                         eprintln!(
                             "Error: Piece size must be between 11 and 24 (inclusive). Got {n}."
@@ -123,7 +132,7 @@ fn main() {
                         wait_for_enter(config.wait_exit);
                         exit(1);
                     }
-                    None => config.piece_length,
+                    None => config.piece_size,
                 };
                 config.tracker_list = if !args.announce.is_empty() {
                     if args.announce.iter().any(|s| s.is_empty()) {
@@ -135,6 +144,7 @@ fn main() {
                     config.tracker_list
                 };
                 config.walk_mode = args.walk_mode.unwrap_or(config.walk_mode);
+                config.private = args.private || config.private;
 
                 let walk_mode = match config.walk_mode {
                     0 => WalkMode::Default,
@@ -170,13 +180,15 @@ fn main() {
                     None => format!("{input}.torrent"),
                 };
 
+                let piece_length = 1usize << config.piece_size;
+
                 if !args.quiet {
                     println!("Target:  {input}");
                     println!("Torrent: {torrent_path}");
                     println!(
                         "Piece Length: {} bytes [{}]",
-                        config.piece_length,
-                        utils::human_size(config.piece_length)
+                        piece_length,
+                        utils::human_size(piece_length)
                     );
                     if config.private {
                         println!("Private Torrent");
@@ -217,7 +229,7 @@ fn main() {
 
                 if let Err(e) = torrent.create_torrent(
                     input.clone(),
-                    config.piece_length,
+                    piece_length,
                     config.private,
                     args.quiet,
                     walk_mode,
