@@ -60,24 +60,26 @@ TorrentUtilsR path/to/data example.torrent
 ### Command Line Options
 
 ```
-Usage: TorrentUtilsR [OPTIONS] [INPUT]...
+Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-w <walk-mode>] [-f] [-q] [-e]
 
-Arguments:
-  [INPUT]...  Torrent/Target Path or Both
+A utility for working with torrent files.
+
+Positional Arguments:
+  input                       torrent/target path or both
 
 Options:
-  -g, --config <CONFIG>        Config file [default: config.toml]
-  -o, --output <OUTPUT>        Output Path (only for create mode)
-  -l, --piece-size <PIECE_SIZE> Piece Size (1 << n, [11, 24]), overrides config [default: 16]
-  -a, --announce <ANNOUNCE>    Announce URLs, multiple allowed, overrides config ("" to clear)
-  -p, --private               Private Torrent, overrides config
-  -c, --comment <COMMENT>     Comment
-  -d, --no-date               No creation date
-  -w, --walk-mode <WALK_MODE>  File walking mode for directories [default: 0]
-  -f, --force                 Force overwrite
-  -q, --quiet                 Hide progress bar and other non-error output
-  -h, --help                  Print help
-  -V, --version               Print version
+  -g, --config <config>       config file
+  -o, --output <output>       output path or torrent name (only for create mode)
+  -l, --piece-size <piece-size> piece size (1 << n, 14..=27), overrides config [default: 20]
+  -a, --announce <announce...> announce URLs, multiple allowed, overrides config ("" to clear)
+  -p, --private               private torrent, overrides config
+  -c, --comment <comment>     comment
+  -d, --no-date               no creation date
+  -w, --walk-mode <walk-mode> walk mode [default: 0]
+  -f, --force                 force overwrite
+  -q, --quiet                 hide progress bar and other non-error output
+  -e, --wait-exit             wait for Enter key before exiting
+  -h, --help                  display usage information
 ```
 
 #### Walk Modes
@@ -98,22 +100,25 @@ TorrentUtilsR supports configuration via a TOML file. By default, it looks for `
 
 ```toml
 # config.toml
+wait_exit = true
+walk_mode = 0
 private = false
-piece_length = 131072  # 128 KiB
-walk_mode = 0          # Default file walking mode
+piece_size = 22
 
 tracker_list = [
-    "http://tracker1.example.com:8080/announce",
-    "http://tracker2.example.com:8080/announce",
-    "udp://tracker3.example.com:1337/announce"
+    "http://nyaa.tracker.wf:7777/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.opentrackr.org:1337/announce",
 ]
 ```
 
 ### Configuration Options
 
-- **`private`**: Boolean, creates private torrents by default
-- **`piece_length`**: Integer, default piece size in bytes (must be power of 2)
+- **`wait_exit`**: Boolean, wait for Enter key before exiting
 - **`walk_mode`**: Integer (0-4), default file walking mode for directories
+- **`private`**: Boolean, creates private torrents by default
+- **`piece_size`**: Integer, piece size exponent (14-27), piece length will be 2^piece_size bytes
 - **`tracker_list`**: Array of tracker URLs to include in created torrents
 
 ## Examples
@@ -134,7 +139,7 @@ TorrentUtilsR "My Movie.mkv"
 TorrentUtilsR "My Series/" \
   --output "My-Series-Complete.torrent" \
   --private \
-  --piece-size 20 \
+  --piece-size 22 \
   --comment "Complete series collection" \
   --announce "http://private-tracker.example.com/announce"
 
