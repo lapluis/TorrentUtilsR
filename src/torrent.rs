@@ -3,10 +3,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use natlex_sort::nat_lex_cmp_ignore;
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Display, Formatter, Result as fmtResult};
 use std::fs::{File, metadata, read};
-use std::io::{Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
+use std::io::{Error as ioError, ErrorKind, Read, Result as ioResult, Seek, SeekFrom, Write};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
-use std::{cmp, error, fmt, result, string};
+use std::{cmp, error, result, string};
 use walkdir::WalkDir;
 
 use crate::utils;
@@ -18,7 +19,7 @@ const MAX_DISPLAYED_FILES: usize = 100;
 
 #[derive(Debug)]
 pub enum TrError {
-    IO(Error),
+    IO(ioError),
     InvalidPath(String),
     InvalidTorrent(String),
     MissingField(String),
@@ -26,8 +27,8 @@ pub enum TrError {
     EncodingError(String),
 }
 
-impl fmt::Display for TrError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for TrError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmtResult {
         match self {
             TrError::IO(err) => write!(f, "IO error: {err}"),
             TrError::InvalidPath(path) => write!(f, "Invalid path: {path}"),
@@ -41,8 +42,8 @@ impl fmt::Display for TrError {
 
 impl error::Error for TrError {}
 
-impl From<Error> for TrError {
-    fn from(err: Error) -> Self {
+impl From<ioError> for TrError {
+    fn from(err: ioError) -> Self {
         TrError::IO(err)
     }
 }
@@ -70,8 +71,8 @@ pub type TrResult<T> = result::Result<T, TrError>;
 pub enum WalkMode {
     Default,
     Alphabetical,
-    BreadthFirstAlphabetical, // tu
-    BreadthFirstLevel,        // qb
+    BreadthFirstAlphabetical, // tu like
+    BreadthFirstLevel,        // qb like
     FileSize,
 }
 
@@ -635,9 +636,9 @@ impl Torrent {
         Ok(())
     }
 
-    pub fn write_to_file(&self, torrent_path: String, force: bool) -> Result<()> {
+    pub fn write_to_file(&self, torrent_path: String, force: bool) -> ioResult<()> {
         if !force && Path::new(&torrent_path).exists() {
-            return Err(Error::new(
+            return Err(ioError::new(
                 ErrorKind::AlreadyExists,
                 "File already exists, use -f to overwrite",
             ));
@@ -933,8 +934,8 @@ impl Torrent {
     }
 }
 
-impl fmt::Display for Torrent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Torrent {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmtResult {
         writeln!(f, "Torrent Info:")?;
 
         match &self.info {
