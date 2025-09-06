@@ -9,7 +9,7 @@ mod utils;
 
 use torrent::{Torrent, WalkMode};
 
-const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes = 64 KiB
+const DEF_PIECE_SIZE: u8 = 20; // 1 << 16 = 65536 bytes = 64 KiB
 
 #[derive(Default, Deserialize)]
 struct Config {
@@ -49,7 +49,7 @@ struct Args {
     #[argh(option, short = 'o')]
     output: Option<String>,
 
-    /// piece size (1 << n, 11..=24), overrides config [default: 16]
+    /// piece size (1 << n, 14..=27), overrides config [default: 20]
     #[argh(option, short = 'l')]
     piece_size: Option<u8>,
 
@@ -123,17 +123,16 @@ fn main() {
                 }
             } else {
                 // create mode
-                config.piece_size = match args.piece_size {
-                    Some(n) if (11..=24).contains(&n) => n,
-                    Some(n) => {
-                        eprintln!(
-                            "Error: Piece size must be between 11 and 24 (inclusive). Got {n}."
-                        );
-                        wait_for_enter(config.wait_exit);
-                        exit(1);
-                    }
-                    None => config.piece_size,
-                };
+                config.piece_size = args.piece_size.unwrap_or(config.piece_size);
+                let piece_length = 1usize
+                    << match config.piece_size {
+                        14..=27 => config.piece_size,
+                        _ => {
+                            eprintln!("Error: Piece size must be between 14 and 27.");
+                            wait_for_enter(config.wait_exit);
+                            exit(1);
+                        }
+                    };
                 config.tracker_list = if !args.announce.is_empty() {
                     if args.announce.iter().any(|s| s.is_empty()) {
                         Vec::new()
@@ -179,8 +178,6 @@ fn main() {
                     }
                     None => format!("{input}.torrent"),
                 };
-
-                let piece_length = 1usize << config.piece_size;
 
                 if !args.quiet {
                     println!("Target:  {input}");
