@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use serde::Deserialize;
 use std::process;
 
@@ -7,7 +7,7 @@ mod utils;
 
 const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes = 64 KiB
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Config {
     private: bool,
     piece_length: usize, // in bytes
@@ -15,66 +15,66 @@ struct Config {
     walk_mode: u8,
 }
 
-#[derive(Parser, Debug)]
-#[command(name = env!("CARGO_PKG_NAME"))]
-#[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "A utility for working with torrent files.", long_about = None)]
+/// A utility for working with torrent files.
+#[derive(FromArgs, Debug)]
+#[argh(help_triggers("-h", "--help"))]
 struct Args {
-    /// Torrent/Target Path or Both
-    input: Option<Vec<String>>,
+    /// torrent/target path or both
+    #[argh(positional)]
+    input: Vec<String>,
 
-    /// Config file
-    #[arg(short = 'g', long, default_value = "config.toml")]
+    /// config file
+    #[argh(option, short = 'g', default = "String::from(\"config.toml\")")]
     config: String,
 
-    /// Output Path or Torrent name (only for create mode)
-    #[arg(short = 'o', long)]
+    /// output path or torrent name (only for create mode)
+    #[argh(option, short = 'o')]
     output: Option<String>,
 
-    /// Piece Size (1 << n, [11, 24]), overrides config [default: 16]
-    #[arg(short = 'l', long = "piece-size")]
+    /// piece size (1 << n, 11..=24), overrides config [default: 16]
+    #[argh(option, short = 'l')]
     piece_size: Option<u8>,
 
-    /// Announce URLs, multiple allowed, overrides config ("" to clear)
-    #[arg(short = 'a', long)]
-    announce: Option<Vec<String>>,
+    /// announce URLs, multiple allowed, overrides config (\"\" to clear)
+    #[argh(option, short = 'a')]
+    announce: Vec<String>,
 
-    /// Private Torrent, overrides config
-    #[arg(short = 'p', long)]
+    /// private torrent, overrides config
+    #[argh(switch, short = 'p')]
     private: bool,
 
-    /// Comment
-    #[arg(short = 'c', long)]
+    /// comment
+    #[argh(option, short = 'c')]
     comment: Option<String>,
 
-    /// No creation date
-    #[arg(short = 'd', long)]
+    /// no creation date
+    #[argh(switch, short = 'd')]
     no_date: bool,
 
-    /// Walk Mode [default: 0]
-    #[arg(short = 'w', long)]
+    /// walk mode [default: 0]
+    #[argh(option, short = 'w')]
     walk_mode: Option<u8>,
 
-    /// Force overwrite
-    #[arg(short = 'f', long)]
+    /// force overwrite
+    #[argh(switch, short = 'f')]
     force: bool,
 
-    /// Hide progress bar and other non-error output
-    #[arg(short = 'q', long = "quiet")]
+    /// hide progress bar and other non-error output
+    #[argh(switch, short = 'q')]
     quiet: bool,
 }
 
 fn main() {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     #[cfg(debug_assertions)]
     {
         println!("{args:?}");
     }
 
-    match args.input {
-        Some(ref inputs) if inputs.len() == 1 => {
-            let input = &inputs[0];
+    match args.input.len() {
+        1 => {
+            let input = &args.input[0];
             if input.ends_with(".torrent") {
                 // show info
                 match torrent::Torrent::read_torrent(input.clone()) {
@@ -111,15 +111,16 @@ fn main() {
                     None => config.piece_length,
                 };
                 config.private = args.private || config.private;
-                config.tracker_list = match args.announce {
-                    Some(ref list) if !list.is_empty() && list[0].is_empty() => Vec::new(),
-                    Some(ref list) if !list.is_empty() => list.clone(),
-                    _ => config.tracker_list,
+                config.tracker_list = if !args.announce.is_empty() {
+                    if args.announce.iter().any(|s| s.is_empty()) {
+                        Vec::new()
+                    } else {
+                        args.announce.clone()
+                    }
+                } else {
+                    config.tracker_list
                 };
-                config.walk_mode = match args.walk_mode {
-                    Some(n) => n,
-                    None => config.walk_mode,
-                };
+                config.walk_mode = args.walk_mode.unwrap_or(config.walk_mode);
 
                 let walk_mode = match config.walk_mode {
                     0 => torrent::WalkMode::Default,
@@ -216,10 +217,8 @@ fn main() {
                 }
             }
         }
-        Some(ref inputs) if inputs.len() == 2 => {
-            // two arguments provided, first is .torrent file, second is target path
-            // verify mode
-            // torrent file and target path may be in any order
+        2 => {
+            let inputs = &args.input;
             let (torrent_path, target_path) = if inputs[0].ends_with(".torrent") {
                 (inputs[0].clone(), inputs[1].clone())
             } else if inputs[1].ends_with(".torrent") {
@@ -250,7 +249,7 @@ fn main() {
             let name = base_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let tr_name = tr_info.get_name().unwrap_or("<unknown>".to_string());
             if name != tr_name {
-                eprintln!("Error: Target name '{name}' does not match torrent name '{tr_name}'",);
+                eprintln!("Error: Target name '{name}' does not match torrent name '{tr_name}'");
                 process::exit(1);
             } else {
                 let full_path = base_path
@@ -270,15 +269,9 @@ fn main() {
                 process::exit(1);
             }
         }
-        Some(ref _inputs) => {
+        _ => {
             eprintln!(
-                "Error: Please provide exactly one argument: either a .torrent file to read or a target path to create a torrent."
-            );
-            process::exit(1);
-        }
-        None => {
-            eprintln!(
-                "Error: No input provided. Please provide a .torrent file to read or a target path to create a torrent."
+                "Error: Please provide one target (create), one .torrent (info), or a .torrent plus target (verify)."
             );
             process::exit(1);
         }
