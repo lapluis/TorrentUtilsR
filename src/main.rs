@@ -1,10 +1,14 @@
-use argh::FromArgs;
-use serde::Deserialize;
 use std::io::{Write, stdin, stdout};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::process::exit;
 
+use argh::FromArgs;
+use serde::Deserialize;
+
+mod bencode;
 mod torrent;
+mod tr_file;
+mod tr_info;
 mod utils;
 
 use torrent::{Torrent, WalkMode};
