@@ -11,7 +11,7 @@ use torrent::{Torrent, WalkMode};
 
 const DEF_PIECE_SIZE: u8 = 20; // 1 << 16 = 65536 bytes = 64 KiB
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct Config {
     #[serde(default)]
     wait_exit: bool,
@@ -29,8 +29,20 @@ struct Config {
     tracker_list: Vec<String>,
 }
 
-fn def_piece_size() -> u8 {
+const fn def_piece_size() -> u8 {
     DEF_PIECE_SIZE
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            wait_exit: false,
+            walk_mode: 0,
+            private: false,
+            piece_size: DEF_PIECE_SIZE,
+            tracker_list: Vec::new(),
+        }
+    }
 }
 
 /// A utility for working with torrent files.
@@ -98,11 +110,13 @@ fn main() {
     let args: Args = argh::from_env();
 
     let mut config: Config = std::fs::read_to_string(&args.config)
-        .ok()
+        .map_err(|_| ())
         .and_then(|content| {
-            toml::from_str::<Config>(&content).ok().inspect(|_| {
-                println!("Config loaded.");
-            })
+            toml::from_str::<Config>(&content)
+                .map_err(|_| ())
+                .inspect(|_| {
+                    println!("Config loaded.");
+                })
         })
         .unwrap_or_default();
 
