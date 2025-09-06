@@ -1,20 +1,23 @@
 use argh::FromArgs;
 use serde::Deserialize;
 use std::io::{Write, stdin, stdout};
+use std::path::{MAIN_SEPARATOR, Path};
 use std::process::exit;
 
 mod torrent;
 mod utils;
 
+use torrent::{Torrent, WalkMode};
+
 const DEF_PIECE_SIZE: u8 = 16; // 1 << 16 = 65536 bytes = 64 KiB
 
 #[derive(Deserialize)]
 struct Config {
+    wait_exit: bool,
+    walk_mode: u8,
     private: bool,
     piece_length: usize, // in bytes
     tracker_list: Vec<String>,
-    walk_mode: u8,
-    wait_exit: bool,
 }
 
 /// A utility for working with torrent files.
@@ -89,11 +92,11 @@ fn main() {
             })
         })
         .unwrap_or_else(|| Config {
+            wait_exit: args.wait_exit,
+            walk_mode: 0,
             private: args.private,
             piece_length: 1usize << DEF_PIECE_SIZE,
             tracker_list: Vec::new(),
-            walk_mode: 0,
-            wait_exit: args.wait_exit,
         });
 
     match args.input.len() {
@@ -101,7 +104,7 @@ fn main() {
             let input = &args.input[0];
             if input.ends_with(".torrent") {
                 // show info
-                match torrent::Torrent::read_torrent(input.clone()) {
+                match Torrent::read_torrent(input.clone()) {
                     Ok(torrent) => println!("{torrent}"),
                     Err(e) => {
                         eprintln!("Error reading torrent file: {e}");
@@ -134,11 +137,11 @@ fn main() {
                 config.walk_mode = args.walk_mode.unwrap_or(config.walk_mode);
 
                 let walk_mode = match config.walk_mode {
-                    0 => torrent::WalkMode::Default,
-                    1 => torrent::WalkMode::Alphabetical,
-                    2 => torrent::WalkMode::BreadthFirstAlphabetical,
-                    3 => torrent::WalkMode::BreadthFirstLevel,
-                    4 => torrent::WalkMode::FileSize,
+                    0 => WalkMode::Default,
+                    1 => WalkMode::Alphabetical,
+                    2 => WalkMode::BreadthFirstAlphabetical,
+                    3 => WalkMode::BreadthFirstLevel,
+                    4 => WalkMode::FileSize,
                     _ => {
                         eprintln!("Error: Invalid walk mode.");
                         wait_for_enter(config.wait_exit);
@@ -149,14 +152,13 @@ fn main() {
                 let torrent_path = match args.output {
                     Some(ref path) => {
                         if path.ends_with(".torrent") {
-                            let path_obj = std::path::Path::new(path);
-                            if path_obj.is_absolute() || path.contains(std::path::MAIN_SEPARATOR) {
+                            let path_obj = Path::new(path);
+                            if path_obj.is_absolute() || path.contains(MAIN_SEPARATOR) {
                                 path.clone()
                             } else {
-                                let target_path = std::path::Path::new(input);
-                                let parent_path = target_path
-                                    .parent()
-                                    .unwrap_or_else(|| std::path::Path::new("."));
+                                let target_path = Path::new(input);
+                                let parent_path =
+                                    target_path.parent().unwrap_or_else(|| Path::new("."));
                                 parent_path.join(path).to_string_lossy().to_string()
                             }
                         } else {
@@ -188,7 +190,7 @@ fn main() {
                     .map(|url| vec![url.clone()])
                     .collect();
 
-                let mut torrent = torrent::Torrent::new(
+                let mut torrent = Torrent::new(
                     if announce_list.is_empty() {
                         None
                     } else {
@@ -247,7 +249,7 @@ fn main() {
             println!("Target:  {target_path}");
             println!("Torrent: {torrent_path}");
 
-            let torrent = match torrent::Torrent::read_torrent(torrent_path) {
+            let torrent = match Torrent::read_torrent(torrent_path) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("Error reading torrent file: {e}");
@@ -263,7 +265,7 @@ fn main() {
                     exit(1);
                 }
             };
-            let base_path = std::path::Path::new(&target_path);
+            let base_path = Path::new(&target_path);
             let name = base_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let tr_name = tr_info.get_name().unwrap_or("<unknown>".to_string());
             if name != tr_name {
@@ -271,9 +273,7 @@ fn main() {
                 wait_for_enter(config.wait_exit);
                 exit(1);
             } else {
-                let full_path = base_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new(""));
+                let full_path = base_path.parent().unwrap_or_else(|| Path::new(""));
                 if !full_path.join(&tr_name).exists() {
                     eprintln!(
                         "Error: Target path '{}' does not exist",
