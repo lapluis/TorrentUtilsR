@@ -343,54 +343,37 @@ impl TrInfo {
         match walk_mode {
             WalkMode::Default => {}
             WalkMode::Alphabetical => {
-                tr_files.sort_by(|a, b| {
-                    let a_path = a.path.join(MAIN_SEPARATOR.to_string().as_str());
-                    let b_path = b.path.join(MAIN_SEPARATOR.to_string().as_str());
-                    a_path.cmp(&b_path)
-                });
+                tr_files.sort_by(|a, b| a.path.cmp(&b.path));
             }
             WalkMode::BreadthFirstAlphabetical => {
                 tr_files.sort_by(|a, b| {
-                    for i in 0..cmp::max(a.path.len(), b.path.len()) {
-                        match (a.path.get(i), b.path.get(i)) {
-                            (Some(seg_a), Some(seg_b)) => {
-                                let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
-                                if cmp_res != cmp::Ordering::Equal {
-                                    return cmp_res;
-                                }
-                            }
-                            (None, Some(_)) => return cmp::Ordering::Less,
-                            (Some(_), None) => return cmp::Ordering::Greater,
-                            (None, None) => break,
-                        }
-                    }
-
-                    cmp::Ordering::Equal
+                    a.path
+                        .iter()
+                        .zip(b.path.iter())
+                        .find_map(|(seg_a, seg_b)| {
+                            let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
+                            (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
+                        })
+                        .unwrap_or_else(|| a.path.len().cmp(&b.path.len()))
                 });
             }
             WalkMode::BreadthFirstLevel => {
                 tr_files.sort_by(|a, b| {
-                    for i in 0..cmp::max(a.path.len(), b.path.len()) {
-                        match (a.path.get(i), b.path.get(i)) {
-                            (Some(seg_a), Some(seg_b)) => {
-                                if i == a.path.len() - 1 && i < b.path.len() - 1 {
-                                    return cmp::Ordering::Less;
-                                }
-                                if i == b.path.len() - 1 && i < a.path.len() - 1 {
-                                    return cmp::Ordering::Greater;
-                                }
-                                let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
-                                if cmp_res != cmp::Ordering::Equal {
-                                    return cmp_res;
+                    a.path
+                        .iter()
+                        .zip(b.path.iter())
+                        .enumerate()
+                        .find_map(|(depth, (seg_a, seg_b))| {
+                            match (depth == a.path.len() - 1, depth == b.path.len() - 1) {
+                                (true, false) => Some(cmp::Ordering::Less),
+                                (false, true) => Some(cmp::Ordering::Greater),
+                                _ => {
+                                    let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
+                                    (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
                                 }
                             }
-                            (None, Some(_)) => return cmp::Ordering::Less,
-                            (Some(_), None) => return cmp::Ordering::Greater,
-                            (None, None) => break,
-                        }
-                    }
-
-                    cmp::Ordering::Equal
+                        })
+                        .unwrap_or_else(|| a.path.len().cmp(&b.path.len()))
                 });
             }
             WalkMode::FileSize => {
