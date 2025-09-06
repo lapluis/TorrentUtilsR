@@ -1,6 +1,7 @@
 use argh::FromArgs;
 use serde::Deserialize;
-use std::process;
+use std::io::{Write, stdin, stdout};
+use std::process::exit;
 
 mod torrent;
 mod utils;
@@ -13,6 +14,7 @@ struct Config {
     piece_length: usize, // in bytes
     tracker_list: Vec<String>,
     walk_mode: u8,
+    wait_exit: bool,
 }
 
 /// A utility for working with torrent files.
@@ -62,10 +64,37 @@ struct Args {
     /// hide progress bar and other non-error output
     #[argh(switch, short = 'q')]
     quiet: bool,
+
+    /// wait for Enter key before exiting
+    #[argh(switch, short = 'e')]
+    wait_exit: bool,
+}
+
+fn wait_for_enter(wait: bool) {
+    if wait {
+        print!("Press Enter to exit...");
+        let _ = stdout().flush();
+        let _ = stdin().read_line(&mut String::new());
+    }
 }
 
 fn main() {
     let args: Args = argh::from_env();
+
+    let mut config: Config = std::fs::read_to_string(&args.config)
+        .ok()
+        .and_then(|content| {
+            toml::from_str::<Config>(&content).ok().inspect(|_| {
+                println!("Config loaded.");
+            })
+        })
+        .unwrap_or_else(|| Config {
+            private: args.private,
+            piece_length: 1usize << DEF_PIECE_SIZE,
+            tracker_list: Vec::new(),
+            walk_mode: 0,
+            wait_exit: args.wait_exit,
+        });
 
     match args.input.len() {
         1 => {
@@ -76,36 +105,23 @@ fn main() {
                     Ok(torrent) => println!("{torrent}"),
                     Err(e) => {
                         eprintln!("Error reading torrent file: {e}");
-                        process::exit(1);
+                        wait_for_enter(config.wait_exit);
+                        exit(1);
                     }
                 }
             } else {
                 // create mode
-                let mut config: Config = std::fs::read_to_string(&args.config)
-                    .ok()
-                    .and_then(|content| {
-                        toml::from_str::<Config>(&content).ok().inspect(|_| {
-                            println!("Config loaded.");
-                        })
-                    })
-                    .unwrap_or_else(|| Config {
-                        private: false,
-                        piece_length: 1usize << DEF_PIECE_SIZE,
-                        tracker_list: Vec::new(),
-                        walk_mode: 0,
-                    });
-
                 config.piece_length = match args.piece_size {
                     Some(n) if (11..=24).contains(&n) => 1usize << n,
                     Some(n) => {
                         eprintln!(
                             "Error: Piece size must be between 11 and 24 (inclusive). Got {n}."
                         );
-                        process::exit(1);
+                        wait_for_enter(config.wait_exit);
+                        exit(1);
                     }
                     None => config.piece_length,
                 };
-                config.private = args.private || config.private;
                 config.tracker_list = if !args.announce.is_empty() {
                     if args.announce.iter().any(|s| s.is_empty()) {
                         Vec::new()
@@ -125,7 +141,8 @@ fn main() {
                     4 => torrent::WalkMode::FileSize,
                     _ => {
                         eprintln!("Error: Invalid walk mode.");
-                        process::exit(1);
+                        wait_for_enter(config.wait_exit);
+                        exit(1);
                     }
                 };
 
@@ -144,7 +161,8 @@ fn main() {
                             }
                         } else {
                             eprint!("Error: Output path must end with .torrent");
-                            process::exit(1);
+                            wait_for_enter(config.wait_exit);
+                            exit(1);
                         }
                     }
                     None => format!("{input}.torrent"),
@@ -203,12 +221,14 @@ fn main() {
                     walk_mode,
                 ) {
                     eprintln!("Error creating torrent: {e}");
-                    process::exit(1);
+                    wait_for_enter(config.wait_exit);
+                    exit(1);
                 }
 
                 if let Err(e) = torrent.write_to_file(torrent_path, args.force) {
                     eprintln!("Error writing torrent file: {e}");
-                    process::exit(1);
+                    wait_for_enter(config.wait_exit);
+                    exit(1);
                 }
             }
         }
@@ -220,7 +240,8 @@ fn main() {
                 (inputs[1].clone(), inputs[0].clone())
             } else {
                 eprintln!("Error: Please provide a .torrent file as one of the arguments.");
-                process::exit(1);
+                wait_for_enter(config.wait_exit);
+                exit(1);
             };
 
             println!("Target:  {target_path}");
@@ -230,14 +251,16 @@ fn main() {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("Error reading torrent file: {e}");
-                    process::exit(1);
+                    wait_for_enter(config.wait_exit);
+                    exit(1);
                 }
             };
             let tr_info = match torrent.get_info() {
                 Some(info) => info,
                 None => {
                     eprintln!("Error: Torrent file does not contain valid info section");
-                    process::exit(1);
+                    wait_for_enter(config.wait_exit);
+                    exit(1);
                 }
             };
             let base_path = std::path::Path::new(&target_path);
@@ -245,7 +268,8 @@ fn main() {
             let tr_name = tr_info.get_name().unwrap_or("<unknown>".to_string());
             if name != tr_name {
                 eprintln!("Error: Target name '{name}' does not match torrent name '{tr_name}'");
-                process::exit(1);
+                wait_for_enter(config.wait_exit);
+                exit(1);
             } else {
                 let full_path = base_path
                     .parent()
@@ -255,20 +279,25 @@ fn main() {
                         "Error: Target path '{}' does not exist",
                         full_path.join(&tr_name).display()
                     );
-                    process::exit(1);
+                    wait_for_enter(config.wait_exit);
+                    exit(1);
                 }
             }
 
             if let Err(e) = tr_info.verify(target_path) {
                 eprintln!("Error during verification: {e}");
-                process::exit(1);
+                wait_for_enter(config.wait_exit);
+                exit(1);
             }
         }
         _ => {
             eprintln!(
                 "Error: Please provide one target (create), one .torrent (info), or a .torrent plus target (verify)."
             );
-            process::exit(1);
+            wait_for_enter(config.wait_exit);
+            exit(1);
         }
     }
+
+    wait_for_enter(config.wait_exit);
 }
