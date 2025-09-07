@@ -5,7 +5,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
-use natlex_sort::nat_lex_cmp_ignore;
+use natord::compare_ignore_case;
 use sha1::{Digest, Sha1};
 use walkdir::WalkDir;
 
@@ -97,7 +97,7 @@ impl TrInfo {
                         .iter()
                         .zip(b.path.iter())
                         .find_map(|(seg_a, seg_b)| {
-                            let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
+                            let cmp_res = compare_ignore_case(seg_a, seg_b);
                             (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
                         })
                         .unwrap_or_else(|| a.path.len().cmp(&b.path.len()))
@@ -114,7 +114,7 @@ impl TrInfo {
                                 (true, false) => Some(cmp::Ordering::Less),
                                 (false, true) => Some(cmp::Ordering::Greater),
                                 _ => {
-                                    let cmp_res = nat_lex_cmp_ignore(seg_a, seg_b);
+                                    let cmp_res = compare_ignore_case(seg_a, seg_b);
                                     (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
                                 }
                             }

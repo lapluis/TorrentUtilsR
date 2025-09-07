@@ -1,5 +1,6 @@
-use natlex_sort::nat_lex_cmp_ignore;
 use std::collections::HashMap;
+
+use natord::compare_ignore_case;
 
 use crate::bencode::{bencode_string, bencode_string_list, bencode_uint};
 use crate::utils::human_size;
@@ -85,7 +86,7 @@ impl Node {
 
     pub fn print_tree(&self) {
         let mut names: Vec<&String> = self.children.keys().collect();
-        names.sort_by(|a, b| nat_lex_cmp_ignore(a, b));
+        names.sort_by(|a, b| compare_ignore_case(a, b));
 
         for (idx, name) in names.iter().enumerate() {
             let last = idx == names.len() - 1;
@@ -114,7 +115,7 @@ impl Node {
         }
 
         let mut names: Vec<&String> = self.children.keys().collect();
-        names.sort_by(|a, b| nat_lex_cmp_ignore(a, b));
+        names.sort_by(|a, b| compare_ignore_case(a, b));
 
         let new_prefix = format!("{}{}", prefix, child_prefix);
         for (idx, name) in names.iter().enumerate() {
