@@ -54,12 +54,15 @@ jobs:
       uses: actions/checkout@v5
       with:
         fetch-depth: 1
+    - name: Install UPX
+      uses: crazy-max/ghaction-upx@v3
+      with:
+        install-only: true
     - name: Install musl-tools (Linux only)
       if: matrix.os == 'ubuntu-24.04'
       run: |
         sudo apt-get update
         sudo apt-get install -y musl-tools
-        musl-gcc --version
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -74,7 +77,7 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Build release binary
-      run: cargo build --target ${{ matrix.target }} --verbose --release
+      run: cargo build --target ${{ matrix.target }} --release
     - name: Build archive
       shell: bash
       run: |
@@ -82,9 +85,11 @@ jobs:
         staging="${{ env.BIN_NAME }}_${{ needs.create-release.outputs.tag }}_${{ matrix.target }}"
         if [ "${{ matrix.os }}" = "windows-2022" ]; then
           cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "target/$staging.exe"
+          upx --best --ultra-brute "target/$staging.exe"
           echo "ASSET=target/$staging.exe" >> $GITHUB_ENV
         else
           cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "target/$staging"
+          upx --best --ultra-brute "target/$staging"
           echo "ASSET=target/$staging" >> $GITHUB_ENV
         fi
     - name: Upload release archive
