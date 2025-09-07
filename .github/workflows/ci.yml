@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   build:
+    if: startsWith(github.ref, 'refs/heads/')
     uses: ./.github/workflows/_build.yml
     with:
       bin_name: TorrentUtilsR

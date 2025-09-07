@@ -37,6 +37,10 @@ jobs:
     needs: [create-release, build-and-upload]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

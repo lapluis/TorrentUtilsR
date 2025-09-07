@@ -25,10 +25,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022
+          - os: windows-2025
             target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
+          - os: macos-15
+            target: aarch64-apple-darwin
+
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -41,6 +46,7 @@ jobs:
         run: sudo apt-get install -y musl-tools
 
       - name: Install UPX
+        if: matrix.os == 'windows-2025' || matrix.os == 'ubuntu-24.04'
         uses: crazy-max/ghaction-upx@v3
         with:
           install-only: true
@@ -68,15 +74,28 @@ jobs:
             STAGING="${{ env.BIN_NAME }}_${{ inputs.release_tag }}_${{ matrix.target }}"
           fi
 
-          if [ "${{ matrix.os }}" = "windows-2022" ]; then
-            cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "target/$STAGING.exe"
-            upx --best --ultra-brute "target/$STAGING.exe"
-            echo "ASSET=target/$STAGING.exe" >> $GITHUB_ENV
-          else
-            cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "target/$STAGING"
-            upx --best --ultra-brute "target/$STAGING"
-            echo "ASSET=target/$STAGING" >> $GITHUB_ENV
-          fi
+          case "${{ matrix.os }}" in
+            windows-2025)
+              cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "target/$STAGING.exe"
+              upx --best --ultra-brute "target/$STAGING.exe"
+              echo "ASSET=target/$STAGING.exe" >> $GITHUB_ENV
+              ;;
+            windows-11-arm)
+              cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "target/$STAGING.exe"
+              echo "ASSET=target/$STAGING.exe" >> $GITHUB_ENV
+              ;;
+            macos-15)
+              cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "target/$STAGING"
+              chmod +x "target/$STAGING"
+              echo "ASSET=target/$STAGING" >> $GITHUB_ENV
+              ;;
+            *)
+              # Linux
+              cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "target/$STAGING"
+              upx --best --ultra-brute "target/$STAGING"
+              echo "ASSET=target/$STAGING" >> $GITHUB_ENV
+              ;;
+          esac
 
       - name: Upload artifact
         if: inputs.release_tag == ''
@@ -90,4 +109,4 @@ jobs:
         if: inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.release_tag }}" "${{ env.ASSET }}"
+        run: gh release upload "${{ inputs.release_tag }}" "${{ env.ASSET }}" --clobber
