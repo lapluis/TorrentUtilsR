@@ -46,19 +46,33 @@ jobs:
             target: x86_64-pc-windows-msvc
             os: windows-2022
           - build: linux
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         fetch-depth: 1
+    - name: Install musl-tools (Linux only)
+      if: matrix.os == 'ubuntu-24.04'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+        musl-gcc --version
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         targets: ${{ matrix.target }}
+    - name: Cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Build release binary
       run: cargo build --target ${{ matrix.target }} --verbose --release
     - name: Build archive
@@ -80,13 +94,14 @@ jobs:
       run: |
         tag="${{ needs.create-release.outputs.tag }}"
         gh release upload "$tag" ${{ env.ASSET }}
+
   publish-release:
     name: Publish Release
     needs: [create-release, build-release]
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         fetch-depth: 1
     - name: Publish Release
