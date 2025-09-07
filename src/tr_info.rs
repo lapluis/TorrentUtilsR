@@ -226,6 +226,9 @@ impl TrInfo {
                 for (file_index, _, _) in &piece_file_info[i] {
                     failed_files.insert(*file_index);
                 }
+                if let Some(ref pb) = pb {
+                    pb.inc(1);
+                }
                 continue;
             }
             for (file_index, file_offset, length) in &piece_file_info[i] {
@@ -255,8 +258,12 @@ impl TrInfo {
                 }
             }
             if let Some(ref pb) = pb {
-                pb.set_position(i as u64);
+                pb.inc(1);
             }
+        }
+
+        if let Some(ref pb) = pb {
+            pb.finish();
         }
 
         println!("Verification Result:");
@@ -355,7 +362,6 @@ fn hash_pieces(
     let mut buf = vec![0u8; BUFFER_SIZE];
     let mut piece_pos = 0usize;
     let mut pieces = Vec::new();
-    let mut piece_count = 0u64;
     let mut hasher = Sha1::new();
 
     // Calculate total size for progress estimation
@@ -424,9 +430,8 @@ fn hash_pieces(
 
                 if piece_pos == chunk_size {
                     pieces.extend_from_slice(&hasher.finalize_reset());
-                    piece_count += 1;
                     if let Some(ref pb) = pb {
-                        pb.set_position(piece_count);
+                        pb.inc(1);
                     }
                     piece_pos = 0;
                 }
@@ -436,9 +441,8 @@ fn hash_pieces(
 
     if piece_pos > 0 {
         pieces.extend_from_slice(&hasher.finalize());
-        piece_count += 1;
         if let Some(ref pb) = pb {
-            pb.set_position(piece_count);
+            pb.inc(1);
         }
     }
 
