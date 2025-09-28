@@ -2,7 +2,7 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, metadata};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{MAIN_SEPARATOR, Path};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use natord::compare_ignore_case;
@@ -199,11 +199,7 @@ impl TrInfo {
             let mut files_ok: bool = true;
             for (file_index, _, _) in &piece_file_info[i] {
                 let tr_file = &tr_files[*file_index];
-                let f_path = if tr_file.path.is_empty() {
-                    base_path.to_path_buf()
-                } else {
-                    base_path.join(tr_file.path.iter().collect::<PathBuf>())
-                };
+                let f_path = tr_file.join_full_path(base_path);
                 let f_path_str = f_path
                     .to_str()
                     .ok_or_else(|| TrError::InvalidPath("Path contains invalid UTF-8".to_string()))?
@@ -233,11 +229,7 @@ impl TrInfo {
             }
             for (file_index, file_offset, length) in &piece_file_info[i] {
                 let tr_file = &tr_files[*file_index];
-                let f_path = if tr_file.path.is_empty() {
-                    base_path.to_path_buf()
-                } else {
-                    base_path.join(tr_file.path.iter().collect::<PathBuf>())
-                };
+                let f_path = tr_file.join_full_path(base_path);
                 let mut f = File::open(f_path)?;
                 f.seek(SeekFrom::Start(*file_offset as u64))?;
                 let mut buf = vec![0u8; *length];
@@ -381,11 +373,7 @@ fn hash_pieces(
     };
 
     for (file_index, tr_file) in tr_files.iter().enumerate() {
-        let f_path = if tr_file.path.is_empty() {
-            base_path.to_path_buf()
-        } else {
-            base_path.join(tr_file.path.iter().collect::<PathBuf>())
-        };
+        let f_path = tr_file.join_full_path(base_path);
 
         // Update the message to show current file being processed with counter
         let rel_path = if tr_file.path.is_empty() {

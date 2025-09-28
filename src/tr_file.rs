@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use natord::compare_ignore_case;
 
@@ -20,6 +21,14 @@ impl TrFile {
         bcode.extend(bencode_string_list(&self.path));
         bcode.push(b'e');
         bcode
+    }
+
+    pub fn join_full_path(&self, base_path: &Path) -> PathBuf {
+        let mut full_path = base_path.to_path_buf();
+        for segment in &self.path {
+            full_path.push(segment);
+        }
+        full_path
     }
 }
 
