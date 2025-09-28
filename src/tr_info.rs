@@ -15,7 +15,6 @@ use crate::torrent::WalkMode;
 use crate::tr_file::{TrFile, bencode_file_list};
 use crate::utils::{TrError, TrResult};
 
-const BUFFER_SIZE: usize = 1 << 18; // 256 KiB buffer
 const SHA1_HASH_SIZE: usize = 20;
 
 struct FileHashInfo {
@@ -38,6 +37,7 @@ impl TrInfo {
         target_path: String,
         piece_length: usize,
         private: bool,
+        n_jobs: usize,
         quiet: bool,
         walk_mode: WalkMode,
     ) -> TrResult<TrInfo> {
@@ -134,7 +134,7 @@ impl TrInfo {
             }
         }
 
-        let pieces = hash_pieces(base_path, &tr_files, piece_length, quiet)?;
+        let pieces = hash_pieces(base_path, &tr_files, piece_length, n_jobs, quiet)?;
 
         Ok(TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
@@ -352,22 +352,37 @@ fn hash_pieces(
     base_path: &Path,
     tr_files: &[TrFile],
     chunk_size: usize,
+    n_jobs: usize,
     quiet: bool,
 ) -> TrResult<Vec<u8>> {
-    let mut buf = vec![0u8; BUFFER_SIZE];
-    let mut piece_pos = 0usize;
-    let mut pieces = Vec::new();
-    let mut hasher = Sha1::new();
+    let mut piece_file_info: Vec<Vec<FileHashInfo>> = Vec::new();
+    let mut unfilled_size = 0usize;
 
-    // Calculate total size for progress estimation
-    let total_size: usize = tr_files.iter().map(|f| f.length).sum();
-    let estimated_pieces = total_size.div_ceil(chunk_size);
-    let total_files = tr_files.len();
+    for (file_index, tr_file) in tr_files.iter().enumerate() {
+        let mut file_rest_size = tr_file.length;
+        let mut file_offset = 0usize;
+        while file_rest_size > 0 {
+            if unfilled_size == 0 {
+                piece_file_info.push(Vec::new());
+                unfilled_size = chunk_size;
+            }
+            let used_size = cmp::min(file_rest_size, unfilled_size);
+            piece_file_info.last_mut().unwrap().push(FileHashInfo {
+                file_index,
+                file_offset,
+                length: used_size,
+            });
+            file_offset += used_size;
+            file_rest_size -= used_size;
+            unfilled_size -= used_size;
+        }
+    }
 
-    // Setup progress bar only if not quiet
+    let pieces_count = piece_file_info.len();
+
     let pb = if !quiet {
-        let pb = ProgressBar::new(estimated_pieces as u64);
-        pb.set_style(ProgressStyle::with_template("{msg}\n{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
+        let pb = ProgressBar::new(pieces_count as u64);
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})\n{msg}")
         .unwrap()
         .progress_chars("#>-"));
         Some(pb)
@@ -375,71 +390,13 @@ fn hash_pieces(
         None
     };
 
-    for (file_index, tr_file) in tr_files.iter().enumerate() {
-        let f_path = tr_file.join_full_path(base_path);
+    let piece_slices = hash_piece_file(&piece_file_info, tr_files, base_path, &pb, n_jobs)?;
 
-        // Update the message to show current file being processed with counter
-        let rel_path = if tr_file.path.is_empty() {
-            base_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string()
-        } else {
-            tr_file.path.join("/")
-        };
-
-        let file_counter = if total_files >= 100 {
-            format!("[{:03}/{}]", file_index + 1, total_files)
-        } else if total_files >= 10 {
-            format!("[{:02}/{}]", file_index + 1, total_files)
-        } else {
-            format!("[{}/{}]", file_index + 1, total_files)
-        };
-
-        if let Some(ref pb) = pb {
-            pb.set_message(format!("Processing: {file_counter} {rel_path}"));
-        }
-
-        let mut f = File::open(&f_path)?;
-
-        loop {
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-
-            let mut buf_pos = 0;
-            while buf_pos < n {
-                let space = chunk_size - piece_pos;
-                let to_copy = cmp::min(space, n - buf_pos);
-
-                hasher.update(&buf[buf_pos..buf_pos + to_copy]);
-
-                piece_pos += to_copy;
-                buf_pos += to_copy;
-
-                if piece_pos == chunk_size {
-                    pieces.extend_from_slice(&hasher.finalize_reset());
-                    if let Some(ref pb) = pb {
-                        pb.inc(1);
-                    }
-                    piece_pos = 0;
-                }
-            }
-        }
-    }
-
-    if piece_pos > 0 {
-        pieces.extend_from_slice(&hasher.finalize());
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
-    }
+    let pieces = piece_slices.concat();
 
     if let Some(pb) = pb {
         let elapsed = pb.elapsed();
-        pb.finish_with_message(format!("Processed {total_files} files in {elapsed:.2?}"));
+        pb.finish_with_message(format!("Processed {pieces_count} pieces in {elapsed:.2?}"));
     }
 
     Ok(pieces)
@@ -462,7 +419,6 @@ fn hash_piece_file(
     n_jobs: usize,
 ) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
     let results: Result<Vec<[u8; SHA1_HASH_SIZE]>, TrError> = {
-        // Use custom thread pool with specified number of threads
         let pool = ThreadPoolBuilder::new()
             .num_threads(n_jobs)
             .build()
@@ -491,7 +447,6 @@ fn hash_piece_file(
                     let mut hash_arr = [0u8; SHA1_HASH_SIZE];
                     hash_arr.copy_from_slice(&calc_hash);
 
-                    // Update progress bar immediately after each piece is processed
                     if let Some(pb) = pb {
                         pb.inc(1);
                     }

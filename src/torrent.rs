@@ -59,10 +59,11 @@ impl Torrent {
         target_path: String,
         piece_length: usize,
         private: bool,
+        n_jobs: usize,
         quiet: bool,
         walk_mode: WalkMode,
     ) -> TrResult<()> {
-        let info = TrInfo::new(target_path, piece_length, private, quiet, walk_mode)?;
+        let info = TrInfo::new(target_path, piece_length, private, n_jobs, quiet, walk_mode)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())

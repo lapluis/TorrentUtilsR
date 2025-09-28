@@ -246,7 +246,6 @@ fn main() {
                     if config.private {
                         println!("Private Torrent");
                     }
-                    println!();
                 }
 
                 let announce_list: Vec<Vec<String>> = config
@@ -284,6 +283,7 @@ fn main() {
                     input.clone(),
                     piece_length,
                     config.private,
+                    config.n_jobs,
                     args.quiet,
                     walk_mode,
                 ) {
