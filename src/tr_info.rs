@@ -1,7 +1,7 @@
 use std::cmp;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{File, metadata};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{MAIN_SEPARATOR, Path};
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -13,8 +13,9 @@ use walkdir::WalkDir;
 use crate::bencode::{bencode_bytes, bencode_string, bencode_uint};
 use crate::torrent::WalkMode;
 use crate::tr_file::{TrFile, bencode_file_list};
-use crate::utils::{TrError, TrResult};
+use crate::utils::{TrError, TrResult, human_size};
 
+const BUFFER_SIZE: usize = 1 << 18; // 256 KiB buffer
 const SHA1_HASH_SIZE: usize = 20;
 
 struct FileHashInfo {
@@ -162,33 +163,12 @@ impl TrInfo {
             }],
         };
 
-        let mut piece_file_info: Vec<Vec<FileHashInfo>> = Vec::new();
-        let mut unfilled_size = 0usize;
-
-        for (file_index, tr_file) in tr_files.iter().enumerate() {
-            let mut rest_size = tr_file.length;
-            let mut file_offset = 0usize;
-            while rest_size > 0 {
-                if unfilled_size == 0 {
-                    piece_file_info.push(Vec::new());
-                    unfilled_size = self.piece_length;
-                }
-                let used_size = cmp::min(rest_size, unfilled_size);
-                piece_file_info.last_mut().unwrap().push(FileHashInfo {
-                    file_index,
-                    file_offset,
-                    length: used_size,
-                });
-                file_offset += used_size;
-                rest_size -= used_size;
-                unfilled_size -= used_size;
-            }
-        }
-
         let piece_slices: Vec<[u8; SHA1_HASH_SIZE]> = split_hash_pieces(&self.pieces);
+        let mut piece_file_info = calc_piece_file_info(tr_files, self.piece_length);
+
         let mut file_status_map: HashMap<String, bool> = HashMap::new();
         let mut failed_files: HashSet<usize> = HashSet::new();
-        let mut failed_files_know: HashSet<usize> = HashSet::new();
+        let mut failed_files_known: HashSet<usize> = HashSet::new();
         let mut failed_pieces: HashSet<usize> = HashSet::new();
 
         let pb = if !quiet {
@@ -210,17 +190,22 @@ impl TrInfo {
                     .to_str()
                     .ok_or_else(|| TrError::InvalidPath("Path contains invalid UTF-8".to_string()))?
                     .to_string();
-                if !file_status_map.contains_key(&f_path_str) {
-                    let f_meta = metadata(&f_path);
-                    if f_meta.is_err() || f_meta?.len() != tr_file.length as u64 {
-                        file_status_map.insert(f_path_str.clone(), false);
-                        failed_files_know.insert(file_hash_info.file_index);
-                        files_ok = false;
-                    } else {
-                        file_status_map.insert(f_path_str.clone(), true);
+                match file_status_map.entry(f_path_str) {
+                    Entry::Vacant(entry) => {
+                        let file_ok = metadata(&f_path)
+                            .ok()
+                            .is_some_and(|meta| meta.len() == tr_file.length as u64);
+                        if !file_ok {
+                            failed_files_known.insert(file_hash_info.file_index);
+                            files_ok = false;
+                        }
+                        entry.insert(file_ok);
                     }
-                } else if !file_status_map[&f_path_str] {
-                    files_ok = false;
+                    Entry::Occupied(entry) => {
+                        if !*entry.get() {
+                            files_ok = false;
+                        }
+                    }
                 }
             }
             if !files_ok {
@@ -282,9 +267,9 @@ impl TrInfo {
             println!("All files are OK.");
         } else {
             println!("\nSome files failed verification:");
-            let mut failed_files: Vec<usize> = failed_files.iter().cloned().collect();
-            failed_files.sort();
-            for file_index in failed_files {
+            let mut failed_files_vec: Vec<usize> = failed_files.iter().cloned().collect();
+            failed_files_vec.sort();
+            for file_index in failed_files_vec {
                 let tr_file = &tr_files[file_index];
                 let rel_path = if tr_file.path.is_empty() {
                     self.name
@@ -294,12 +279,18 @@ impl TrInfo {
                 } else {
                     tr_file.path.join("/")
                 };
-                let known_issue = if failed_files_know.contains(&file_index) {
+                let known_issue = if failed_files_known.contains(&file_index) {
                     " [missing or size mismatch]"
                 } else {
                     ""
                 };
-                println!("- {} ({} bytes){}", rel_path, tr_file.length, known_issue);
+                println!(
+                    "- {} ({} [{}]){}",
+                    rel_path,
+                    tr_file.length,
+                    human_size(tr_file.length),
+                    known_issue
+                );
             }
         }
         Ok(())
@@ -355,29 +346,7 @@ fn hash_pieces(
     n_jobs: usize,
     quiet: bool,
 ) -> TrResult<Vec<u8>> {
-    let mut piece_file_info: Vec<Vec<FileHashInfo>> = Vec::new();
-    let mut unfilled_size = 0usize;
-
-    for (file_index, tr_file) in tr_files.iter().enumerate() {
-        let mut file_rest_size = tr_file.length;
-        let mut file_offset = 0usize;
-        while file_rest_size > 0 {
-            if unfilled_size == 0 {
-                piece_file_info.push(Vec::new());
-                unfilled_size = chunk_size;
-            }
-            let used_size = cmp::min(file_rest_size, unfilled_size);
-            piece_file_info.last_mut().unwrap().push(FileHashInfo {
-                file_index,
-                file_offset,
-                length: used_size,
-            });
-            file_offset += used_size;
-            file_rest_size -= used_size;
-            unfilled_size -= used_size;
-        }
-    }
-
+    let piece_file_info = calc_piece_file_info(tr_files, chunk_size);
     let pieces_count = piece_file_info.len();
 
     let pb = if !quiet {
@@ -392,7 +361,10 @@ fn hash_pieces(
 
     let piece_slices = hash_piece_file(&piece_file_info, tr_files, base_path, &pb, n_jobs)?;
 
-    let pieces = piece_slices.concat();
+    let mut pieces = Vec::with_capacity(piece_slices.len() * SHA1_HASH_SIZE);
+    for slice in piece_slices {
+        pieces.extend_from_slice(&slice);
+    }
 
     if let Some(pb) = pb {
         let elapsed = pb.elapsed();
@@ -411,6 +383,36 @@ fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; SHA1_HASH_SIZE]> {
     slices
 }
 
+fn calc_piece_file_info(tr_files: &[TrFile], piece_length: usize) -> Vec<Vec<FileHashInfo>> {
+    let total_size: usize = tr_files.iter().map(|f| f.length).sum();
+    let pieces_count = total_size.div_ceil(piece_length);
+
+    let mut piece_file_info: Vec<Vec<FileHashInfo>> = Vec::with_capacity(pieces_count);
+    let mut unfilled_size = 0usize;
+
+    for (file_index, tr_file) in tr_files.iter().enumerate() {
+        let mut rest_size = tr_file.length;
+        let mut file_offset = 0usize;
+        while rest_size > 0 {
+            if unfilled_size == 0 {
+                piece_file_info.push(Vec::new());
+                unfilled_size = piece_length;
+            }
+            let used_size = cmp::min(rest_size, unfilled_size);
+            piece_file_info.last_mut().unwrap().push(FileHashInfo {
+                file_index,
+                file_offset,
+                length: used_size,
+            });
+            file_offset += used_size;
+            rest_size -= used_size;
+            unfilled_size -= used_size;
+        }
+    }
+
+    piece_file_info
+}
+
 fn hash_piece_file(
     piece_file_info: &Vec<Vec<FileHashInfo>>,
     tr_files: &[TrFile],
@@ -422,7 +424,7 @@ fn hash_piece_file(
         let pool = ThreadPoolBuilder::new()
             .num_threads(n_jobs)
             .build()
-            .map_err(|e| TrError::ParseError(format!("Failed to create thread pool: {}", e)))?;
+            .map_err(|e| TrError::ParseError(format!("Failed to create thread pool: {e}")))?;
 
         pool.install(|| {
             piece_file_info
@@ -433,10 +435,12 @@ fn hash_piece_file(
                     for file_hash_info in piece {
                         let tr_file = &tr_files[file_hash_info.file_index];
                         let f_path = tr_file.join_full_path(base_path);
-                        let mut f = File::open(f_path)?;
-                        f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
+                        let f = File::open(f_path)?;
+                        let mut buf_reader = BufReader::with_capacity(BUFFER_SIZE, f);
+                        buf_reader.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
+
                         let mut buf = vec![0u8; file_hash_info.length];
-                        let n = f.read(&mut buf)?;
+                        let n = buf_reader.read(&mut buf)?;
                         if n != file_hash_info.length {
                             buf.truncate(n);
                         }
