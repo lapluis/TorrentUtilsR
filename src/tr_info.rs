@@ -6,6 +6,7 @@ use std::path::{MAIN_SEPARATOR, Path};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use natord::compare_ignore_case;
+use rayon::{ThreadPoolBuilder, prelude::*};
 use sha1::{Digest, Sha1};
 use walkdir::WalkDir;
 
@@ -16,6 +17,12 @@ use crate::utils::{TrError, TrResult};
 
 const BUFFER_SIZE: usize = 1 << 18; // 256 KiB buffer
 const SHA1_HASH_SIZE: usize = 20;
+
+struct FileHashInfo {
+    file_index: usize,
+    file_offset: usize,
+    length: usize,
+}
 
 pub struct TrInfo {
     pub files: Option<Vec<TrFile>>,
@@ -143,7 +150,7 @@ impl TrInfo {
         })
     }
 
-    pub fn verify(&self, target_path: String, quiet: bool) -> TrResult<()> {
+    pub fn verify(&self, target_path: String, n_jobs: usize, quiet: bool) -> TrResult<()> {
         let base_path = Path::new(&target_path);
         let tr_files = match self.files {
             Some(ref files) => files,
@@ -155,7 +162,7 @@ impl TrInfo {
             }],
         };
 
-        let mut piece_file_info: Vec<Vec<(usize, usize, usize)>> = Vec::new(); // piece_index -> [(file_index, file_offset, length), ...]
+        let mut piece_file_info: Vec<Vec<FileHashInfo>> = Vec::new();
         let mut unfilled_size = 0usize;
 
         for (file_index, tr_file) in tr_files.iter().enumerate() {
@@ -167,10 +174,11 @@ impl TrInfo {
                     unfilled_size = self.piece_length;
                 }
                 let used_size = cmp::min(rest_size, unfilled_size);
-                piece_file_info
-                    .last_mut()
-                    .unwrap()
-                    .push((file_index, file_offset, used_size));
+                piece_file_info.last_mut().unwrap().push(FileHashInfo {
+                    file_index,
+                    file_offset,
+                    length: used_size,
+                });
                 file_offset += used_size;
                 rest_size -= used_size;
                 unfilled_size -= used_size;
@@ -183,8 +191,6 @@ impl TrInfo {
         let mut failed_files_know: HashSet<usize> = HashSet::new();
         let mut failed_pieces: HashSet<usize> = HashSet::new();
 
-        let mut hasher = Sha1::new();
-
         let pb = if !quiet {
             let pb = ProgressBar::new(piece_slices.len() as u64);
             pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
@@ -195,10 +201,10 @@ impl TrInfo {
             None
         };
 
-        for (i, piece_hash) in piece_slices.iter().enumerate() {
+        for (i, piece) in piece_file_info.iter().enumerate() {
             let mut files_ok: bool = true;
-            for (file_index, _, _) in &piece_file_info[i] {
-                let tr_file = &tr_files[*file_index];
+            for file_hash_info in piece {
+                let tr_file = &tr_files[file_hash_info.file_index];
                 let f_path = tr_file.join_full_path(base_path);
                 let f_path_str = f_path
                     .to_str()
@@ -208,7 +214,7 @@ impl TrInfo {
                     let f_meta = metadata(&f_path);
                     if f_meta.is_err() || f_meta?.len() != tr_file.length as u64 {
                         file_status_map.insert(f_path_str.clone(), false);
-                        failed_files_know.insert(*file_index);
+                        failed_files_know.insert(file_hash_info.file_index);
                         files_ok = false;
                     } else {
                         file_status_map.insert(f_path_str.clone(), true);
@@ -219,38 +225,35 @@ impl TrInfo {
             }
             if !files_ok {
                 failed_pieces.insert(i);
-                for (file_index, _, _) in &piece_file_info[i] {
-                    failed_files.insert(*file_index);
+                for file_hash_info in piece {
+                    failed_files.insert(file_hash_info.file_index);
                 }
                 if let Some(ref pb) = pb {
                     pb.inc(1);
                 }
                 continue;
             }
-            for (file_index, file_offset, length) in &piece_file_info[i] {
-                let tr_file = &tr_files[*file_index];
-                let f_path = tr_file.join_full_path(base_path);
-                let mut f = File::open(f_path)?;
-                f.seek(SeekFrom::Start(*file_offset as u64))?;
-                let mut buf = vec![0u8; *length];
-                let n = f.read(&mut buf)?;
-                if n != *length {
-                    buf.truncate(n);
+        }
+
+        let mut i: usize = 0;
+        let mut pieces_to_check = Vec::new();
+        piece_file_info.retain(|_| {
+            let retain = !failed_pieces.contains(&i);
+            if retain {
+                pieces_to_check.push(i);
+            }
+            i += 1;
+            retain
+        });
+
+        let calc_piece_slices =
+            hash_piece_file(&piece_file_info, tr_files, base_path, &pb, n_jobs)?;
+        for (i, piece_calc_hash) in calc_piece_slices.iter().enumerate() {
+            if *piece_calc_hash != piece_slices[pieces_to_check[i]] {
+                failed_pieces.insert(pieces_to_check[i]);
+                for file_hash_info in &piece_file_info[i] {
+                    failed_files.insert(file_hash_info.file_index);
                 }
-                hasher.update(&buf);
-            }
-            let calc_hash = hasher.finalize_reset();
-            if &calc_hash[..] != piece_hash {
-                files_ok = false;
-            }
-            if !files_ok {
-                failed_pieces.insert(i);
-                for (file_index, _, _) in &piece_file_info[i] {
-                    failed_files.insert(*file_index);
-                }
-            }
-            if let Some(ref pb) = pb {
-                pb.inc(1);
             }
         }
 
@@ -449,4 +452,55 @@ fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; SHA1_HASH_SIZE]> {
         slices[i].copy_from_slice(&piece[i * SHA1_HASH_SIZE..(i + 1) * SHA1_HASH_SIZE]);
     }
     slices
+}
+
+fn hash_piece_file(
+    piece_file_info: &Vec<Vec<FileHashInfo>>,
+    tr_files: &[TrFile],
+    base_path: &Path,
+    pb: &Option<ProgressBar>,
+    n_jobs: usize,
+) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
+    let results: Result<Vec<[u8; SHA1_HASH_SIZE]>, TrError> = {
+        // Use custom thread pool with specified number of threads
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(n_jobs)
+            .build()
+            .map_err(|e| TrError::ParseError(format!("Failed to create thread pool: {}", e)))?;
+
+        pool.install(|| {
+            piece_file_info
+                .par_iter()
+                .map(|piece| -> TrResult<[u8; SHA1_HASH_SIZE]> {
+                    let mut hasher = Sha1::new();
+
+                    for file_hash_info in piece {
+                        let tr_file = &tr_files[file_hash_info.file_index];
+                        let f_path = tr_file.join_full_path(base_path);
+                        let mut f = File::open(f_path)?;
+                        f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
+                        let mut buf = vec![0u8; file_hash_info.length];
+                        let n = f.read(&mut buf)?;
+                        if n != file_hash_info.length {
+                            buf.truncate(n);
+                        }
+                        hasher.update(&buf);
+                    }
+
+                    let calc_hash = hasher.finalize();
+                    let mut hash_arr = [0u8; SHA1_HASH_SIZE];
+                    hash_arr.copy_from_slice(&calc_hash);
+
+                    // Update progress bar immediately after each piece is processed
+                    if let Some(pb) = pb {
+                        pb.inc(1);
+                    }
+
+                    Ok(hash_arr)
+                })
+                .collect()
+        })
+    };
+
+    results
 }

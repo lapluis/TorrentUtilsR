@@ -20,6 +20,9 @@ struct Config {
     #[serde(default)]
     wait_exit: bool,
 
+    #[serde(default = "default_n_jobs")]
+    n_jobs: usize,
+
     #[serde(default)]
     walk_mode: u8,
 
@@ -37,10 +40,15 @@ const fn def_piece_size() -> u8 {
     DEF_PIECE_SIZE
 }
 
+const fn default_n_jobs() -> usize {
+    1
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             wait_exit: false,
+            n_jobs: 1,
             walk_mode: 0,
             private: false,
             piece_size: DEF_PIECE_SIZE,
@@ -93,6 +101,10 @@ struct Args {
     #[argh(switch, short = 'f')]
     force: bool,
 
+    /// number of threads to use (only for verify mode) [default: 1]
+    #[argh(option, short = 'j', default = "1")]
+    n_jobs: usize,
+
     /// hide progress bar and other non-error output
     #[argh(switch, short = 'q')]
     quiet: bool,
@@ -137,6 +149,7 @@ fn main() {
         .unwrap_or_default();
 
     config.wait_exit = args.wait_exit || config.wait_exit;
+    config.n_jobs = args.n_jobs;
 
     match args.input.len() {
         1 => {
@@ -338,7 +351,7 @@ fn main() {
                 }
             }
 
-            if let Err(e) = tr_info.verify(target_path, args.quiet) {
+            if let Err(e) = tr_info.verify(target_path, config.n_jobs, args.quiet) {
                 eprintln!("Error during verification: {e}");
                 wait_for_enter(config.wait_exit);
                 exit(1);
