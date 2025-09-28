@@ -117,7 +117,7 @@ impl Node {
         let mut names: Vec<&String> = self.children.keys().collect();
         names.sort_by(|a, b| compare_ignore_case(a, b));
 
-        let new_prefix = format!("{}{}", prefix, child_prefix);
+        let new_prefix = format!("{prefix}{child_prefix}");
         for (idx, name) in names.iter().enumerate() {
             let last = idx == names.len() - 1;
             let child = self.children.get(*name).unwrap();

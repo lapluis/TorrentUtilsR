@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter, Result as fmtResult};
 use std::io::Error as ioError;
-use std::{error, result, string};
+use std::{error, string};
 
 #[derive(Debug)]
 pub enum TrError {
@@ -51,7 +51,7 @@ impl From<String> for TrError {
     }
 }
 
-pub type TrResult<T> = result::Result<T, TrError>;
+pub type TrResult<T> = Result<T, TrError>;
 
 pub fn human_size(bytes: usize) -> String {
     const KB: usize = 1024;

@@ -369,7 +369,7 @@ impl Torrent {
         match &self.info {
             Some(info) => {
                 if let Some(name) = &info.name {
-                    println!("{}", name);
+                    println!("{name}");
                 }
                 let _ = stdout().flush();
                 if let Some(files) = &info.files {
