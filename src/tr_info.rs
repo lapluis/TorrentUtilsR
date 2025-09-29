@@ -1,21 +1,33 @@
 use std::cmp;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{File, metadata};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{MAIN_SEPARATOR, Path};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use natord::compare_ignore_case;
+use rayon::{ThreadPoolBuilder, prelude::*};
 use sha1::{Digest, Sha1};
 use walkdir::WalkDir;
 
 use crate::bencode::{bencode_bytes, bencode_string, bencode_uint};
 use crate::torrent::WalkMode;
 use crate::tr_file::{TrFile, bencode_file_list};
-use crate::utils::{TrError, TrResult};
+use crate::utils::{TrError, TrResult, human_size};
 
-const BUFFER_SIZE: usize = 1 << 18; // 256 KiB buffer
 const SHA1_HASH_SIZE: usize = 20;
+
+struct FileHashInfo {
+    file_index: usize,
+    file_offset: usize,
+    length: usize,
+}
+
+struct FailedInfo {
+    files: HashSet<usize>,
+    files_known: HashSet<usize>,
+    pieces: HashSet<usize>,
+}
 
 pub struct TrInfo {
     pub files: Option<Vec<TrFile>>,
@@ -31,6 +43,7 @@ impl TrInfo {
         target_path: String,
         piece_length: usize,
         private: bool,
+        n_jobs: usize,
         quiet: bool,
         walk_mode: WalkMode,
     ) -> TrResult<TrInfo> {
@@ -127,7 +140,7 @@ impl TrInfo {
             }
         }
 
-        let pieces = hash_pieces(base_path, &tr_files, piece_length, quiet)?;
+        let pieces = hash_tr_files(base_path, &tr_files, piece_length, n_jobs, quiet)?;
 
         Ok(TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
@@ -143,7 +156,7 @@ impl TrInfo {
         })
     }
 
-    pub fn verify(&self, target_path: String, quiet: bool) -> TrResult<()> {
+    pub fn verify(&self, target_path: String, n_jobs: usize, quiet: bool) -> TrResult<()> {
         let base_path = Path::new(&target_path);
         let tr_files = match self.files {
             Some(ref files) => files,
@@ -155,125 +168,25 @@ impl TrInfo {
             }],
         };
 
-        let mut piece_file_info: Vec<Vec<(usize, usize, usize)>> = Vec::new(); // piece_index -> [(file_index, file_offset, length), ...]
-        let mut unfilled_size = 0usize;
-
-        for (file_index, tr_file) in tr_files.iter().enumerate() {
-            let mut rest_size = tr_file.length;
-            let mut file_offset = 0usize;
-            while rest_size > 0 {
-                if unfilled_size == 0 {
-                    piece_file_info.push(Vec::new());
-                    unfilled_size = self.piece_length;
-                }
-                let used_size = cmp::min(rest_size, unfilled_size);
-                piece_file_info
-                    .last_mut()
-                    .unwrap()
-                    .push((file_index, file_offset, used_size));
-                file_offset += used_size;
-                rest_size -= used_size;
-                unfilled_size -= used_size;
-            }
-        }
-
         let piece_slices: Vec<[u8; SHA1_HASH_SIZE]> = split_hash_pieces(&self.pieces);
-        let mut file_status_map: HashMap<String, bool> = HashMap::new();
-        let mut failed_files: HashSet<usize> = HashSet::new();
-        let mut failed_files_know: HashSet<usize> = HashSet::new();
-        let mut failed_pieces: HashSet<usize> = HashSet::new();
 
-        let mut hasher = Sha1::new();
-
-        let pb = if !quiet {
-            let pb = ProgressBar::new(piece_slices.len() as u64);
-            pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
-            .unwrap()
-            .progress_chars("#>-"));
-            Some(pb)
-        } else {
-            None
-        };
-
-        for (i, piece_hash) in piece_slices.iter().enumerate() {
-            let mut files_ok: bool = true;
-            for (file_index, _, _) in &piece_file_info[i] {
-                let tr_file = &tr_files[*file_index];
-                let f_path = if tr_file.path.is_empty() {
-                    base_path.to_path_buf()
-                } else {
-                    base_path.join(tr_file.path.iter().collect::<PathBuf>())
-                };
-                let f_path_str = f_path
-                    .to_str()
-                    .ok_or_else(|| TrError::InvalidPath("Path contains invalid UTF-8".to_string()))?
-                    .to_string();
-                if !file_status_map.contains_key(&f_path_str) {
-                    let f_meta = metadata(&f_path);
-                    if f_meta.is_err() || f_meta?.len() != tr_file.length as u64 {
-                        file_status_map.insert(f_path_str.clone(), false);
-                        failed_files_know.insert(*file_index);
-                        files_ok = false;
-                    } else {
-                        file_status_map.insert(f_path_str.clone(), true);
-                    }
-                } else if !file_status_map[&f_path_str] {
-                    files_ok = false;
-                }
-            }
-            if !files_ok {
-                failed_pieces.insert(i);
-                for (file_index, _, _) in &piece_file_info[i] {
-                    failed_files.insert(*file_index);
-                }
-                if let Some(ref pb) = pb {
-                    pb.inc(1);
-                }
-                continue;
-            }
-            for (file_index, file_offset, length) in &piece_file_info[i] {
-                let tr_file = &tr_files[*file_index];
-                let f_path = if tr_file.path.is_empty() {
-                    base_path.to_path_buf()
-                } else {
-                    base_path.join(tr_file.path.iter().collect::<PathBuf>())
-                };
-                let mut f = File::open(f_path)?;
-                f.seek(SeekFrom::Start(*file_offset as u64))?;
-                let mut buf = vec![0u8; *length];
-                let n = f.read(&mut buf)?;
-                if n != *length {
-                    buf.truncate(n);
-                }
-                hasher.update(&buf);
-            }
-            let calc_hash = hasher.finalize_reset();
-            if &calc_hash[..] != piece_hash {
-                files_ok = false;
-            }
-            if !files_ok {
-                failed_pieces.insert(i);
-                for (file_index, _, _) in &piece_file_info[i] {
-                    failed_files.insert(*file_index);
-                }
-            }
-            if let Some(ref pb) = pb {
-                pb.inc(1);
-            }
-        }
-
-        if let Some(ref pb) = pb {
-            pb.finish();
-        }
+        let failed_info = verify_tr_files(
+            &piece_slices,
+            tr_files,
+            base_path,
+            self.piece_length,
+            n_jobs,
+            quiet,
+        )?;
 
         println!("Verification Result:");
 
         let total_pieces = piece_slices.len();
-        let failed_piece_count = failed_pieces.len();
+        let failed_piece_count = failed_info.pieces.len();
         let passed_piece_count = total_pieces - failed_piece_count;
 
         let total_files = tr_files.len();
-        let failed_file_count = failed_files.len();
+        let failed_file_count = failed_info.files.len();
         let passed_file_count = total_files - failed_file_count;
 
         println!(
@@ -283,13 +196,13 @@ impl TrInfo {
             "Files:  {total_files:8} total = {passed_file_count:8} passed + {failed_file_count:8} failed"
         );
 
-        if failed_files.is_empty() {
+        if failed_info.files.is_empty() {
             println!("All files are OK.");
         } else {
             println!("\nSome files failed verification:");
-            let mut failed_files: Vec<usize> = failed_files.iter().cloned().collect();
-            failed_files.sort();
-            for file_index in failed_files {
+            let mut failed_files_vec: Vec<usize> = failed_info.files.iter().cloned().collect();
+            failed_files_vec.sort();
+            for file_index in failed_files_vec {
                 let tr_file = &tr_files[file_index];
                 let rel_path = if tr_file.path.is_empty() {
                     self.name
@@ -299,12 +212,18 @@ impl TrInfo {
                 } else {
                     tr_file.path.join("/")
                 };
-                let known_issue = if failed_files_know.contains(&file_index) {
+                let known_issue = if failed_info.files_known.contains(&file_index) {
                     " [missing or size mismatch]"
                 } else {
                     ""
                 };
-                println!("- {} ({} bytes){}", rel_path, tr_file.length, known_issue);
+                println!(
+                    "- {} ({} [{}]){}",
+                    rel_path,
+                    tr_file.length,
+                    human_size(tr_file.length),
+                    known_issue
+                );
             }
         }
         Ok(())
@@ -353,26 +272,19 @@ impl TrInfo {
     }
 }
 
-fn hash_pieces(
+fn hash_tr_files(
     base_path: &Path,
     tr_files: &[TrFile],
     chunk_size: usize,
+    n_jobs: usize,
     quiet: bool,
 ) -> TrResult<Vec<u8>> {
-    let mut buf = vec![0u8; BUFFER_SIZE];
-    let mut piece_pos = 0usize;
-    let mut pieces = Vec::new();
-    let mut hasher = Sha1::new();
+    let piece_file_info = calc_piece_file_info(tr_files, chunk_size);
+    let pieces_count = piece_file_info.len();
 
-    // Calculate total size for progress estimation
-    let total_size: usize = tr_files.iter().map(|f| f.length).sum();
-    let estimated_pieces = total_size.div_ceil(chunk_size);
-    let total_files = tr_files.len();
-
-    // Setup progress bar only if not quiet
     let pb = if !quiet {
-        let pb = ProgressBar::new(estimated_pieces as u64);
-        pb.set_style(ProgressStyle::with_template("{msg}\n{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
+        let pb = ProgressBar::new(pieces_count as u64);
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})\n{msg}")
         .unwrap()
         .progress_chars("#>-"));
         Some(pb)
@@ -380,78 +292,113 @@ fn hash_pieces(
         None
     };
 
-    for (file_index, tr_file) in tr_files.iter().enumerate() {
-        let f_path = if tr_file.path.is_empty() {
-            base_path.to_path_buf()
-        } else {
-            base_path.join(tr_file.path.iter().collect::<PathBuf>())
-        };
+    let piece_slices = hash_piece_file(&piece_file_info, tr_files, base_path, &pb, n_jobs)?;
 
-        // Update the message to show current file being processed with counter
-        let rel_path = if tr_file.path.is_empty() {
-            base_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string()
-        } else {
-            tr_file.path.join("/")
-        };
-
-        let file_counter = if total_files >= 100 {
-            format!("[{:03}/{}]", file_index + 1, total_files)
-        } else if total_files >= 10 {
-            format!("[{:02}/{}]", file_index + 1, total_files)
-        } else {
-            format!("[{}/{}]", file_index + 1, total_files)
-        };
-
-        if let Some(ref pb) = pb {
-            pb.set_message(format!("Processing: {file_counter} {rel_path}"));
-        }
-
-        let mut f = File::open(&f_path)?;
-
-        loop {
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-
-            let mut buf_pos = 0;
-            while buf_pos < n {
-                let space = chunk_size - piece_pos;
-                let to_copy = cmp::min(space, n - buf_pos);
-
-                hasher.update(&buf[buf_pos..buf_pos + to_copy]);
-
-                piece_pos += to_copy;
-                buf_pos += to_copy;
-
-                if piece_pos == chunk_size {
-                    pieces.extend_from_slice(&hasher.finalize_reset());
-                    if let Some(ref pb) = pb {
-                        pb.inc(1);
-                    }
-                    piece_pos = 0;
-                }
-            }
-        }
-    }
-
-    if piece_pos > 0 {
-        pieces.extend_from_slice(&hasher.finalize());
-        if let Some(ref pb) = pb {
-            pb.inc(1);
-        }
+    let mut pieces = Vec::with_capacity(piece_slices.len() * SHA1_HASH_SIZE);
+    for slice in piece_slices {
+        pieces.extend_from_slice(&slice);
     }
 
     if let Some(pb) = pb {
         let elapsed = pb.elapsed();
-        pb.finish_with_message(format!("Processed {total_files} files in {elapsed:.2?}"));
+        pb.finish_with_message(format!("Processed {pieces_count} pieces in {elapsed:.2?}"));
     }
 
     Ok(pieces)
+}
+
+fn verify_tr_files(
+    piece_slices: &[[u8; SHA1_HASH_SIZE]],
+    tr_files: &[TrFile],
+    base_path: &Path,
+    piece_length: usize,
+    n_jobs: usize,
+    quiet: bool,
+) -> TrResult<FailedInfo> {
+    let piece_file_info = calc_piece_file_info(tr_files, piece_length);
+
+    let mut file_status_map: HashMap<String, bool> = HashMap::new();
+    let mut failed_info = FailedInfo {
+        files: HashSet::new(),
+        files_known: HashSet::new(),
+        pieces: HashSet::new(),
+    };
+
+    let pb = if !quiet {
+        let pb = ProgressBar::new(piece_slices.len() as u64);
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+        Some(pb)
+    } else {
+        None
+    };
+
+    for (i, piece) in piece_file_info.iter().enumerate() {
+        let mut files_ok: bool = true;
+        for file_hash_info in piece {
+            let tr_file = &tr_files[file_hash_info.file_index];
+            let f_path = tr_file.join_full_path(base_path);
+            let f_path_str = f_path
+                .to_str()
+                .ok_or_else(|| TrError::InvalidPath("Path contains invalid UTF-8".to_string()))?
+                .to_string();
+            match file_status_map.entry(f_path_str) {
+                Entry::Vacant(entry) => {
+                    let file_ok = metadata(&f_path)
+                        .ok()
+                        .is_some_and(|meta| meta.len() == tr_file.length as u64);
+                    if !file_ok {
+                        failed_info.files_known.insert(file_hash_info.file_index);
+                        files_ok = false;
+                    }
+                    entry.insert(file_ok);
+                }
+                Entry::Occupied(entry) => {
+                    if !*entry.get() {
+                        files_ok = false;
+                    }
+                }
+            }
+        }
+        if !files_ok {
+            failed_info.pieces.insert(i);
+            for file_hash_info in piece {
+                failed_info.files.insert(file_hash_info.file_index);
+            }
+            if let Some(ref pb) = pb {
+                pb.inc(1);
+            }
+            continue;
+        }
+    }
+
+    let pieces_to_check_count = piece_slices.len() - failed_info.pieces.len();
+    let mut pieces_to_check = Vec::with_capacity(pieces_to_check_count);
+    let mut filtered_piece_file_info = Vec::with_capacity(pieces_to_check_count);
+    for (i, piece_info) in piece_file_info.into_iter().enumerate() {
+        if !failed_info.pieces.contains(&i) {
+            pieces_to_check.push(i);
+            filtered_piece_file_info.push(piece_info);
+        }
+    }
+    let piece_file_info = filtered_piece_file_info;
+
+    let calc_piece_slices = hash_piece_file(&piece_file_info, tr_files, base_path, &pb, n_jobs)?;
+    for (i, piece_calc_hash) in calc_piece_slices.iter().enumerate() {
+        if *piece_calc_hash != piece_slices[pieces_to_check[i]] {
+            failed_info.pieces.insert(pieces_to_check[i]);
+            for file_hash_info in &piece_file_info[i] {
+                failed_info.files.insert(file_hash_info.file_index);
+            }
+        }
+    }
+
+    if let Some(ref pb) = pb {
+        pb.finish();
+    }
+
+    Ok(failed_info)
 }
 
 fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; SHA1_HASH_SIZE]> {
@@ -461,4 +408,83 @@ fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; SHA1_HASH_SIZE]> {
         slices[i].copy_from_slice(&piece[i * SHA1_HASH_SIZE..(i + 1) * SHA1_HASH_SIZE]);
     }
     slices
+}
+
+fn calc_piece_file_info(tr_files: &[TrFile], piece_length: usize) -> Vec<Vec<FileHashInfo>> {
+    let total_size: usize = tr_files.iter().map(|f| f.length).sum();
+    let pieces_count = total_size.div_ceil(piece_length);
+
+    let mut piece_file_info: Vec<Vec<FileHashInfo>> = Vec::with_capacity(pieces_count);
+    let mut unfilled_size = 0usize;
+
+    for (file_index, tr_file) in tr_files.iter().enumerate() {
+        let mut rest_size = tr_file.length;
+        let mut file_offset = 0usize;
+        while rest_size > 0 {
+            if unfilled_size == 0 {
+                piece_file_info.push(Vec::new());
+                unfilled_size = piece_length;
+            }
+            let used_size = cmp::min(rest_size, unfilled_size);
+            piece_file_info.last_mut().unwrap().push(FileHashInfo {
+                file_index,
+                file_offset,
+                length: used_size,
+            });
+            file_offset += used_size;
+            rest_size -= used_size;
+            unfilled_size -= used_size;
+        }
+    }
+
+    piece_file_info
+}
+
+fn hash_piece_file(
+    piece_file_info: &Vec<Vec<FileHashInfo>>,
+    tr_files: &[TrFile],
+    base_path: &Path,
+    pb: &Option<ProgressBar>,
+    n_jobs: usize,
+) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
+    let results: Result<Vec<[u8; SHA1_HASH_SIZE]>, TrError> = {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(n_jobs)
+            .build()
+            .map_err(|e| TrError::ParseError(format!("Failed to create thread pool: {e}")))?;
+
+        pool.install(|| {
+            piece_file_info
+                .par_iter()
+                .map(|piece| -> TrResult<[u8; SHA1_HASH_SIZE]> {
+                    let mut hasher = Sha1::new();
+
+                    for file_hash_info in piece {
+                        let tr_file = &tr_files[file_hash_info.file_index];
+                        let f_path = tr_file.join_full_path(base_path);
+                        let mut f = File::open(f_path)?;
+                        f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
+                        let mut buf = vec![0u8; file_hash_info.length];
+                        let n = f.read(&mut buf)?;
+                        if n != file_hash_info.length {
+                            buf.truncate(n);
+                        }
+                        hasher.update(&buf);
+                    }
+
+                    let calc_hash = hasher.finalize();
+                    let mut hash_arr = [0u8; SHA1_HASH_SIZE];
+                    hash_arr.copy_from_slice(&calc_hash);
+
+                    if let Some(pb) = pb {
+                        pb.inc(1);
+                    }
+
+                    Ok(hash_arr)
+                })
+                .collect()
+        })
+    };
+
+    results
 }

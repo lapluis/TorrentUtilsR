@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use natord::compare_ignore_case;
 
@@ -20,6 +21,14 @@ impl TrFile {
         bcode.extend(bencode_string_list(&self.path));
         bcode.push(b'e');
         bcode
+    }
+
+    pub fn join_full_path(&self, base_path: &Path) -> PathBuf {
+        let mut full_path = base_path.to_path_buf();
+        for segment in &self.path {
+            full_path.push(segment);
+        }
+        full_path
     }
 }
 
@@ -117,7 +126,7 @@ impl Node {
         let mut names: Vec<&String> = self.children.keys().collect();
         names.sort_by(|a, b| compare_ignore_case(a, b));
 
-        let new_prefix = format!("{}{}", prefix, child_prefix);
+        let new_prefix = format!("{prefix}{child_prefix}");
         for (idx, name) in names.iter().enumerate() {
             let last = idx == names.len() - 1;
             let child = self.children.get(*name).unwrap();

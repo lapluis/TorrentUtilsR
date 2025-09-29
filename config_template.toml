@@ -1,4 +1,5 @@
 wait_exit = true
+n_jobs = 4
 walk_mode = 0
 private = false
 piece_size = 22
