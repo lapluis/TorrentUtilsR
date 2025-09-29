@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::cmp;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{File, metadata};
@@ -292,7 +293,14 @@ fn hash_tr_files(
         None
     };
 
-    let piece_slices = hash_piece_file(&piece_file_info, tr_files, base_path, &pb, n_jobs)?;
+    let piece_slices = hash_piece_file(
+        chunk_size,
+        &piece_file_info,
+        tr_files,
+        base_path,
+        &pb,
+        n_jobs,
+    )?;
 
     let mut pieces = Vec::with_capacity(piece_slices.len() * SHA1_HASH_SIZE);
     for slice in piece_slices {
@@ -384,7 +392,14 @@ fn verify_tr_files(
     }
     let piece_file_info = filtered_piece_file_info;
 
-    let calc_piece_slices = hash_piece_file(&piece_file_info, tr_files, base_path, &pb, n_jobs)?;
+    let calc_piece_slices = hash_piece_file(
+        piece_length,
+        &piece_file_info,
+        tr_files,
+        base_path,
+        &pb,
+        n_jobs,
+    )?;
     for (i, piece_calc_hash) in calc_piece_slices.iter().enumerate() {
         if *piece_calc_hash != piece_slices[pieces_to_check[i]] {
             failed_info.pieces.insert(pieces_to_check[i]);
@@ -426,11 +441,14 @@ fn calc_piece_file_info(tr_files: &[TrFile], piece_length: usize) -> Vec<Vec<Fil
                 unfilled_size = piece_length;
             }
             let used_size = cmp::min(rest_size, unfilled_size);
-            piece_file_info.last_mut().unwrap().push(FileHashInfo {
-                file_index,
-                file_offset,
-                length: used_size,
-            });
+            piece_file_info
+                .last_mut()
+                .expect("Piece file info should have at least one piece")
+                .push(FileHashInfo {
+                    file_index,
+                    file_offset,
+                    length: used_size,
+                });
             file_offset += used_size;
             rest_size -= used_size;
             unfilled_size -= used_size;
@@ -440,13 +458,23 @@ fn calc_piece_file_info(tr_files: &[TrFile], piece_length: usize) -> Vec<Vec<Fil
     piece_file_info
 }
 
+thread_local! {
+    static FIXED_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
 fn hash_piece_file(
-    piece_file_info: &Vec<Vec<FileHashInfo>>,
+    piece_length: usize,
+    piece_file_info: &[Vec<FileHashInfo>],
     tr_files: &[TrFile],
     base_path: &Path,
     pb: &Option<ProgressBar>,
     n_jobs: usize,
 ) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
+    let f_path_list: Vec<_> = tr_files
+        .iter()
+        .map(|tr_file| tr_file.join_full_path(base_path))
+        .collect();
+
     let results: Result<Vec<[u8; SHA1_HASH_SIZE]>, TrError> = {
         let pool = ThreadPoolBuilder::new()
             .num_threads(n_jobs)
@@ -459,18 +487,23 @@ fn hash_piece_file(
                 .map(|piece| -> TrResult<[u8; SHA1_HASH_SIZE]> {
                     let mut hasher = Sha1::new();
 
-                    for file_hash_info in piece {
-                        let tr_file = &tr_files[file_hash_info.file_index];
-                        let f_path = tr_file.join_full_path(base_path);
-                        let mut f = File::open(f_path)?;
-                        f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
-                        let mut buf = vec![0u8; file_hash_info.length];
-                        let n = f.read(&mut buf)?;
-                        if n != file_hash_info.length {
-                            buf.truncate(n);
+                    FIXED_BUFFER.with(|buf_cell| -> TrResult<()> {
+                        let mut buf = buf_cell.borrow_mut();
+                        if buf.capacity() < piece_length {
+                            buf.resize(piece_length, 0);
                         }
-                        hasher.update(&buf);
-                    }
+
+                        for file_hash_info in piece {
+                            let f_path = &f_path_list[file_hash_info.file_index];
+                            let mut f = File::open(f_path)?;
+                            f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
+
+                            let buf_slice = &mut buf[..file_hash_info.length];
+                            let n = f.read(buf_slice)?;
+                            hasher.update(&buf_slice[..n]);
+                        }
+                        Ok(())
+                    })?;
 
                     let calc_hash = hasher.finalize();
                     let mut hash_arr = [0u8; SHA1_HASH_SIZE];
