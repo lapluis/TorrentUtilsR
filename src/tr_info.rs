@@ -78,11 +78,11 @@ impl TrInfo {
                         .path()
                         .strip_prefix(base_path)
                         .map_err(|_| {
-                            TrError::InvalidPath("Failed to create relative path".to_string())
+                            TrError::InvalidPath(String::from("Failed to create relative path"))
                         })?
                         .to_str()
                         .ok_or_else(|| {
-                            TrError::InvalidPath("Path contains invalid UTF-8".to_string())
+                            TrError::InvalidPath(String::from("Path contains invalid UTF-8"))
                         })?
                         .split(MAIN_SEPARATOR)
                         .map(str::to_owned)
@@ -95,9 +95,9 @@ impl TrInfo {
                 }
             }
         } else {
-            return Err(TrError::InvalidPath(
-                "Target path is neither a file nor a directory".to_string(),
-            ));
+            return Err(TrError::InvalidPath(String::from(
+                "Target path is neither a file nor a directory",
+            )));
         }
 
         match walk_mode {
@@ -164,7 +164,7 @@ impl TrInfo {
             None => &vec![TrFile {
                 length: self
                     .length
-                    .ok_or_else(|| TrError::MissingField("length".to_string()))?,
+                    .ok_or_else(|| TrError::MissingField(String::from("length")))?,
                 path: Vec::new(),
             }],
         };
@@ -208,7 +208,7 @@ impl TrInfo {
                 let rel_path = if tr_file.path.is_empty() {
                     self.name
                         .as_ref()
-                        .ok_or_else(|| TrError::MissingField("name".to_string()))?
+                        .ok_or_else(|| TrError::MissingField(String::from("name")))?
                         .to_string()
                 } else {
                     tr_file.path.join("/")
@@ -233,7 +233,7 @@ impl TrInfo {
     pub fn get_name(&self) -> TrResult<String> {
         self.name
             .clone()
-            .ok_or_else(|| TrError::MissingField("name".to_string()))
+            .ok_or_else(|| TrError::MissingField(String::from("name")))
     }
 
     pub fn bencode(&self) -> Vec<u8> {
@@ -349,7 +349,7 @@ fn verify_tr_files(
             let f_path = tr_file.join_full_path(base_path);
             let f_path_str = f_path
                 .to_str()
-                .ok_or_else(|| TrError::InvalidPath("Path contains invalid UTF-8".to_string()))?
+                .ok_or_else(|| TrError::InvalidPath(String::from("Path contains invalid UTF-8")))?
                 .to_string();
             match file_status_map.entry(f_path_str) {
                 Entry::Vacant(entry) => {

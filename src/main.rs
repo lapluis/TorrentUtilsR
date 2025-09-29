@@ -341,7 +341,7 @@ fn main() {
             };
             let base_path = Path::new(&target_path);
             let name = base_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let tr_name = tr_info.get_name().unwrap_or("<unknown>".to_string());
+            let tr_name = tr_info.get_name().unwrap_or(String::from("<unknown>"));
             if name != tr_name {
                 eprintln!("Error: Target name '{name}' does not match torrent name '{tr_name}'");
                 wait_for_enter(config.wait_exit);

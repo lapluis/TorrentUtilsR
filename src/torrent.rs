@@ -130,12 +130,12 @@ impl Torrent {
                     while data.get(*pos) != Some(&b'e') {
                         let key = match parse_bencode(data, pos)? {
                             Bencode::Bytes(b) => String::from_utf8(b.to_vec()).map_err(|_| {
-                                TrError::InvalidTorrent("invalid utf8 key".to_string())
+                                TrError::InvalidTorrent(String::from("invalid utf8 key"))
                             })?,
                             _ => {
-                                return Err(TrError::InvalidTorrent(
-                                    "dict key not string".to_string(),
-                                ));
+                                return Err(TrError::InvalidTorrent(String::from(
+                                    "dict key not string",
+                                )));
                             }
                         };
                         let val = parse_bencode(data, pos)?;
@@ -150,9 +150,9 @@ impl Torrent {
                         *pos += 1;
                     }
                     if *pos >= data.len() {
-                        return Err(TrError::InvalidTorrent(
-                            "truncated string length".to_string(),
-                        ));
+                        return Err(TrError::InvalidTorrent(String::from(
+                            "truncated string length",
+                        )));
                     }
                     let len_str = std::str::from_utf8(&data[start..*pos])
                         .map_err(|_| "invalid utf8 length")?;
@@ -160,7 +160,7 @@ impl Torrent {
                     *pos += 1;
                     let end = *pos + len;
                     if end > data.len() {
-                        return Err(TrError::InvalidTorrent("truncated string".to_string()));
+                        return Err(TrError::InvalidTorrent(String::from("truncated string")));
                     }
                     let slice = &data[*pos..end];
                     *pos = end;
@@ -175,16 +175,16 @@ impl Torrent {
         let tr_dict = match root {
             Bencode::Dict(m) => m,
             _ => {
-                return Err(TrError::InvalidTorrent(
-                    "torrent root is not a dictionary".to_string(),
-                ));
+                return Err(TrError::InvalidTorrent(String::from(
+                    "torrent root is not a dictionary",
+                )));
             }
         };
 
         let info_dict = match tr_dict.get("info") {
             Some(Bencode::Dict(m)) => m,
             _ => {
-                return Err(TrError::InvalidTorrent("missing info dict".to_string()));
+                return Err(TrError::InvalidTorrent(String::from("missing info dict")));
             }
         };
 
@@ -196,9 +196,9 @@ impl Torrent {
                         let length = match m.get("length") {
                             Some(Bencode::Int(i)) => *i,
                             _ => {
-                                return Err(TrError::InvalidTorrent(
-                                    "file length invalid".to_string(),
-                                ));
+                                return Err(TrError::InvalidTorrent(String::from(
+                                    "file length invalid",
+                                )));
                             }
                         };
                         let path = match m.get("path") {
@@ -212,9 +212,9 @@ impl Torrent {
                                 ps
                             }
                             _ => {
-                                return Err(TrError::InvalidTorrent(
-                                    "file path invalid".to_string(),
-                                ));
+                                return Err(TrError::InvalidTorrent(String::from(
+                                    "file path invalid",
+                                )));
                             }
                         };
                         out.push(TrFile { length, path });
@@ -238,12 +238,14 @@ impl Torrent {
             piece_length: match info_dict.get("piece length") {
                 Some(Bencode::Int(i)) => *i,
                 _ => {
-                    return Err(TrError::InvalidTorrent("piece length missing".to_string()));
+                    return Err(TrError::InvalidTorrent(String::from(
+                        "piece length missing",
+                    )));
                 }
             },
             pieces: match info_dict.get("pieces") {
                 Some(Bencode::Bytes(b)) => b.to_vec(),
-                _ => return Err(TrError::InvalidTorrent("pieces missing".to_string())),
+                _ => return Err(TrError::InvalidTorrent(String::from("pieces missing"))),
             },
             private: match info_dict.get("private") {
                 Some(Bencode::Int(i)) => *i != 0,
@@ -269,18 +271,18 @@ impl Torrent {
                                             tier_list.push(String::from_utf8(b.to_vec())?)
                                         }
                                         _ => {
-                                            return Err(TrError::InvalidTorrent(
-                                                "Announce URL is not a string".to_string(),
-                                            ));
+                                            return Err(TrError::InvalidTorrent(String::from(
+                                                "Announce URL is not a string",
+                                            )));
                                         }
                                     }
                                 }
                                 alist.push(tier_list);
                             }
                             _ => {
-                                return Err(TrError::InvalidTorrent(
-                                    "Announce tier is not a list".to_string(),
-                                ));
+                                return Err(TrError::InvalidTorrent(String::from(
+                                    "Announce tier is not a list",
+                                )));
                             }
                         }
                     }
