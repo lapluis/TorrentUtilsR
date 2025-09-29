@@ -63,27 +63,29 @@ TorrentUtilsR path/to/data example.torrent
 ### Command Line Options
 
 ```
-Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-w <walk-mode>] [-f] [-q] [-t] [-e]
+Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-w <walk-mode>] [-f] [-j <n-jobs>] [-q] [-t] [-e]
 
 A utility for working with torrent files.
 
 Positional Arguments:
-  input                       torrent/target path or both
+  input             torrent/target path or both
 
 Options:
-  -g, --config <config>       config file
-  -o, --output <output>       output path or torrent name (only for create mode)
-  -l, --piece-size <piece-size> piece size (1 << n, 14..=27), overrides config [default: 20]
-  -a, --announce <announce...> announce URLs, multiple allowed, overrides config ("" to clear)
-  -p, --private               private torrent, overrides config
-  -c, --comment <comment>     comment
-  -d, --no-date               no creation date
-  -w, --walk-mode <walk-mode> walk mode [default: 0]
-  -f, --force                 force overwrite
-  -q, --quiet                 hide progress bar and other non-error output
-  -t, --print-tree            print torrent file tree, only for info mode
-  -e, --wait-exit             wait for Enter key before exiting
-  -h, --help                  display usage information
+  -g, --config      config file
+  -o, --output      output path or torrent name (only for create mode)
+  -l, --piece-size  piece size (1 << n, 14..=27), overrides config [default: 20]
+  -a, --announce    announce URLs, multiple allowed, overrides config ("" to
+                    clear)
+  -p, --private     private torrent, overrides config
+  -c, --comment     comment
+  -d, --no-date     no creation date
+  -w, --walk-mode   walk mode [default: 0]
+  -f, --force       force overwrite
+  -j, --n-jobs      number of threads to use (only for verify mode) [default: 1]
+  -q, --quiet       hide progress bar and other non-error output
+  -t, --print-tree  print torrent file tree, only for info mode
+  -e, --wait-exit   wait for Enter key before exiting
+  -h, --help        display usage information
 ```
 
 #### Walk Modes
@@ -105,6 +107,7 @@ TorrentUtilsR supports configuration via a TOML file. By default, it looks for `
 ```toml
 # config.toml
 wait_exit = true
+n_jobs = 4
 walk_mode = 0
 private = false
 piece_size = 22
@@ -120,6 +123,7 @@ tracker_list = [
 ### Configuration Options
 
 - **`wait_exit`**: Boolean, wait for Enter key before exiting
+- **`n_jobs`**: Integer, number of threads to use for verify mode (default: 1)
 - **`walk_mode`**: Integer (0-4), default file walking mode for directories
 - **`private`**: Boolean, creates private torrents by default
 - **`piece_size`**: Integer, piece size exponent (14-27), piece length will be 2^piece_size bytes
