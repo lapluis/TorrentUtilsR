@@ -1,7 +1,7 @@
 use std::cmp;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{File, metadata};
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{MAIN_SEPARATOR, Path};
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -15,7 +15,6 @@ use crate::torrent::WalkMode;
 use crate::tr_file::{TrFile, bencode_file_list};
 use crate::utils::{TrError, TrResult, human_size};
 
-const BUFFER_SIZE: usize = 1 << 18; // 256 KiB buffer
 const SHA1_HASH_SIZE: usize = 20;
 
 struct FileHashInfo {
@@ -463,12 +462,10 @@ fn hash_piece_file(
                     for file_hash_info in piece {
                         let tr_file = &tr_files[file_hash_info.file_index];
                         let f_path = tr_file.join_full_path(base_path);
-                        let f = File::open(f_path)?;
-                        let mut buf_reader = BufReader::with_capacity(BUFFER_SIZE, f);
-                        buf_reader.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
-
+                        let mut f = File::open(f_path)?;
+                        f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
                         let mut buf = vec![0u8; file_hash_info.length];
-                        let n = buf_reader.read(&mut buf)?;
+                        let n = f.read(&mut buf)?;
                         if n != file_hash_info.length {
                             buf.truncate(n);
                         }
