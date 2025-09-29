@@ -1,6 +1,7 @@
 use std::io::{Write, stdin, stdout};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::process::exit;
+use std::thread;
 
 use argh::FromArgs;
 use serde::Deserialize;
@@ -102,8 +103,8 @@ struct Args {
     force: bool,
 
     /// number of threads to use (only for verify mode) [default: 1]
-    #[argh(option, short = 'j', default = "1")]
-    n_jobs: usize,
+    #[argh(option, short = 'j')]
+    n_jobs: Option<usize>,
 
     /// hide progress bar and other non-error output
     #[argh(switch, short = 'q')]
@@ -149,7 +150,13 @@ fn main() {
         .unwrap_or_default();
 
     config.wait_exit = args.wait_exit || config.wait_exit;
-    config.n_jobs = args.n_jobs;
+
+    config.n_jobs = args.n_jobs.unwrap_or(config.n_jobs).clamp(
+        1,
+        thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1),
+    );
 
     match args.input.len() {
         1 => {
