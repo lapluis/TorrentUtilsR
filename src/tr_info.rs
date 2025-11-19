@@ -18,6 +18,11 @@ use crate::utils::{TrError, TrResult, human_size};
 
 const SHA1_HASH_SIZE: usize = 20;
 
+const PB_STYLE_TEMPLATE: &str =
+    "{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})";
+const PB_PROGRESS_CHARS: &str = "#>-";
+const FINISHED_LINE: &str = "\x1b[32m✓\x1b[0m [\x1b[36m########################################\x1b[0m] [100/100] pieces (100%, eta: 0s)";
+
 struct FileHashInfo {
     file_index: usize,
     file_offset: usize,
@@ -285,9 +290,11 @@ fn hash_tr_files(
 
     let pb = if !quiet {
         let pb = ProgressBar::new(pieces_count as u64);
-        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})\n{msg}")
-        .unwrap()
-        .progress_chars("#>-"));
+        pb.set_style(
+            ProgressStyle::with_template(PB_STYLE_TEMPLATE)
+                .unwrap()
+                .progress_chars(PB_PROGRESS_CHARS),
+        );
         Some(pb)
     } else {
         None
@@ -309,7 +316,9 @@ fn hash_tr_files(
 
     if let Some(pb) = pb {
         let elapsed = pb.elapsed();
-        pb.finish_with_message(format!("Processed {pieces_count} pieces in {elapsed:.2?}"));
+        pb.finish_and_clear();
+        println!("{}", FINISHED_LINE);
+        println!("Processed {pieces_count} pieces in {elapsed:.2?}");
     }
 
     Ok(pieces)
@@ -334,9 +343,11 @@ fn verify_tr_files(
 
     let pb = if !quiet {
         let pb = ProgressBar::new(piece_slices.len() as u64);
-        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
-            .unwrap()
-            .progress_chars("#>-"));
+        pb.set_style(
+            ProgressStyle::with_template(PB_STYLE_TEMPLATE)
+                .unwrap()
+                .progress_chars(PB_PROGRESS_CHARS),
+        );
         Some(pb)
     } else {
         None
@@ -410,7 +421,8 @@ fn verify_tr_files(
     }
 
     if let Some(ref pb) = pb {
-        pb.finish();
+        pb.finish_and_clear();
+        println!("{}", FINISHED_LINE);
     }
 
     Ok(failed_info)
