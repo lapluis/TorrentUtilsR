@@ -21,7 +21,9 @@ const SHA1_HASH_SIZE: usize = 20;
 const PB_STYLE_TEMPLATE: &str =
     "{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})";
 const PB_PROGRESS_CHARS: &str = "#>-";
-const FINISHED_LINE: &str = "\x1b[32m✓\x1b[0m [\x1b[36m########################################\x1b[0m] [100/100] pieces (100%, eta: 0s)";
+const FINISHED_LINE_PREFIX: &str =
+    "\x1b[32m✓\x1b[0m [\x1b[36m########################################\x1b[0m]";
+const FINISHED_LINE_SUFFIX: &str = "pieces (100%, eta: 0s)";
 
 struct FileHashInfo {
     file_index: usize,
@@ -317,7 +319,7 @@ fn hash_tr_files(
     if let Some(pb) = pb {
         let elapsed = pb.elapsed();
         pb.finish_and_clear();
-        println!("{}", FINISHED_LINE);
+        println!("{FINISHED_LINE_PREFIX} [{pieces_count}/{pieces_count}] {FINISHED_LINE_SUFFIX}");
         println!("Processed {pieces_count} pieces in {elapsed:.2?}");
     }
 
@@ -340,9 +342,10 @@ fn verify_tr_files(
         files_known: HashSet::new(),
         pieces: HashSet::new(),
     };
+    let pieces_count = piece_slices.len();
 
     let pb = if !quiet {
-        let pb = ProgressBar::new(piece_slices.len() as u64);
+        let pb = ProgressBar::new(pieces_count as u64);
         pb.set_style(
             ProgressStyle::with_template(PB_STYLE_TEMPLATE)
                 .unwrap()
@@ -392,7 +395,7 @@ fn verify_tr_files(
         }
     }
 
-    let pieces_to_check_count = piece_slices.len() - failed_info.pieces.len();
+    let pieces_to_check_count = pieces_count - failed_info.pieces.len();
     let mut pieces_to_check = Vec::with_capacity(pieces_to_check_count);
     let mut filtered_piece_file_info = Vec::with_capacity(pieces_to_check_count);
     for (i, piece_info) in piece_file_info.into_iter().enumerate() {
@@ -421,8 +424,10 @@ fn verify_tr_files(
     }
 
     if let Some(ref pb) = pb {
+        let elapsed = pb.elapsed();
         pb.finish_and_clear();
-        println!("{}", FINISHED_LINE);
+        println!("{FINISHED_LINE_PREFIX} [{pieces_count}/{pieces_count}] {FINISHED_LINE_SUFFIX}");
+        println!("Processed {pieces_count} pieces in {elapsed:.2?}");
     }
 
     Ok(failed_info)
