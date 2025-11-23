@@ -5,7 +5,7 @@ use std::fs::{File, metadata};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{MAIN_SEPARATOR, Path};
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use natord::compare_ignore_case;
 use rayon::{ThreadPoolBuilder, prelude::*};
 use sha1::{Digest, Sha1};
@@ -14,16 +14,9 @@ use walkdir::WalkDir;
 use crate::bencode::{bencode_bytes, bencode_string, bencode_uint};
 use crate::torrent::WalkMode;
 use crate::tr_file::{TrFile, bencode_file_list};
-use crate::utils::{TrError, TrResult, human_size};
+use crate::utils::{TrError, TrResult, finish_progress_bar, human_size, make_progress_bar};
 
 const SHA1_HASH_SIZE: usize = 20;
-
-const PB_STYLE_TEMPLATE: &str =
-    "{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})";
-const PB_PROGRESS_CHARS: &str = "#>-";
-const FINISHED_LINE_PREFIX: &str =
-    "\x1b[32m✓\x1b[0m [\x1b[36m########################################\x1b[0m]";
-const FINISHED_LINE_SUFFIX: &str = "pieces (100%, eta: 0s)";
 
 struct FileHashInfo {
     file_index: usize,
@@ -290,17 +283,7 @@ fn hash_tr_files(
     let piece_file_info = calc_piece_file_info(tr_files, chunk_size);
     let pieces_count = piece_file_info.len();
 
-    let pb = if !quiet {
-        let pb = ProgressBar::new(pieces_count as u64);
-        pb.set_style(
-            ProgressStyle::with_template(PB_STYLE_TEMPLATE)
-                .unwrap()
-                .progress_chars(PB_PROGRESS_CHARS),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    let pb = make_progress_bar(pieces_count, quiet);
 
     let piece_slices = hash_piece_file(
         chunk_size,
@@ -316,12 +299,7 @@ fn hash_tr_files(
         pieces.extend_from_slice(&slice);
     }
 
-    if let Some(pb) = pb {
-        let elapsed = pb.elapsed();
-        pb.finish_and_clear();
-        println!("{FINISHED_LINE_PREFIX} [{pieces_count}/{pieces_count}] {FINISHED_LINE_SUFFIX}");
-        println!("Processed {pieces_count} pieces in {elapsed:.2?}");
-    }
+    finish_progress_bar(pb, pieces_count);
 
     Ok(pieces)
 }
@@ -344,17 +322,7 @@ fn verify_tr_files(
     };
     let pieces_count = piece_slices.len();
 
-    let pb = if !quiet {
-        let pb = ProgressBar::new(pieces_count as u64);
-        pb.set_style(
-            ProgressStyle::with_template(PB_STYLE_TEMPLATE)
-                .unwrap()
-                .progress_chars(PB_PROGRESS_CHARS),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    let pb = make_progress_bar(pieces_count, quiet);
 
     for (i, piece) in piece_file_info.iter().enumerate() {
         let mut files_ok: bool = true;
@@ -423,12 +391,7 @@ fn verify_tr_files(
         }
     }
 
-    if let Some(ref pb) = pb {
-        let elapsed = pb.elapsed();
-        pb.finish_and_clear();
-        println!("{FINISHED_LINE_PREFIX} [{pieces_count}/{pieces_count}] {FINISHED_LINE_SUFFIX}");
-        println!("Processed {pieces_count} pieces in {elapsed:.2?}");
-    }
+    finish_progress_bar(pb, pieces_count);
 
     Ok(failed_info)
 }
