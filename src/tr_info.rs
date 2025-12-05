@@ -12,11 +12,26 @@ use sha1::{Digest, Sha1};
 use walkdir::WalkDir;
 
 use crate::bencode::{bencode_bytes, bencode_string, bencode_uint};
-use crate::torrent::WalkMode;
 use crate::tr_file::{TrFile, bencode_file_list};
 use crate::utils::{TrError, TrResult, finish_progress_bar, human_size, make_progress_bar};
 
 const SHA1_HASH_SIZE: usize = 20;
+
+pub enum WalkMode {
+    Default,
+    Alphabetical,
+    BreadthFirstAlphabetical, // tu like
+    BreadthFirstLevel,        // qb like
+    FileSize,
+}
+
+pub struct TrConfig {
+    pub piece_length: usize,
+    pub private: bool,
+    pub n_jobs: usize,
+    pub walk_mode: WalkMode,
+    pub source: Option<String>,
+}
 
 struct FileHashInfo {
     file_index: usize,
@@ -41,15 +56,7 @@ pub struct TrInfo {
 }
 
 impl TrInfo {
-    pub fn new(
-        target_path: String,
-        piece_length: usize,
-        private: bool,
-        n_jobs: usize,
-        quiet: bool,
-        walk_mode: WalkMode,
-        source: Option<String>,
-    ) -> TrResult<TrInfo> {
+    pub fn new(target_path: String, tr_config: &TrConfig, quiet: bool) -> TrResult<TrInfo> {
         let base_path = Path::new(&target_path);
         let name = base_path
             .file_name()
@@ -102,7 +109,7 @@ impl TrInfo {
             )));
         }
 
-        match walk_mode {
+        match tr_config.walk_mode {
             WalkMode::Default => {}
             WalkMode::Alphabetical => {
                 tr_files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -143,7 +150,13 @@ impl TrInfo {
             }
         }
 
-        let pieces = hash_tr_files(base_path, &tr_files, piece_length, n_jobs, quiet)?;
+        let pieces = hash_tr_files(
+            base_path,
+            &tr_files,
+            tr_config.piece_length,
+            tr_config.n_jobs,
+            quiet,
+        )?;
 
         Ok(TrInfo {
             files: if !single_file { Some(tr_files) } else { None },
@@ -153,10 +166,10 @@ impl TrInfo {
                 None
             },
             name: Some(name.to_string()),
-            piece_length,
+            piece_length: tr_config.piece_length,
             pieces,
-            private,
-            source,
+            private: tr_config.private,
+            source: tr_config.source.clone(),
         })
     }
 

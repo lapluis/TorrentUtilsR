@@ -12,7 +12,10 @@ mod tr_file;
 mod tr_info;
 mod utils;
 
-use torrent::{Torrent, WalkMode};
+use torrent::Torrent;
+use tr_info::WalkMode;
+
+use crate::tr_info::TrConfig;
 
 const DEF_PIECE_SIZE: u8 = 20; // 1 << 16 = 65536 bytes = 64 KiB
 
@@ -166,8 +169,6 @@ fn main() {
             .unwrap_or(1),
     );
 
-    config.source = args.source.or(config.source).filter(|s| !s.is_empty());
-
     match args.input.len() {
         1 => {
             let input = &args.input[0];
@@ -197,15 +198,34 @@ fn main() {
                     println!("I: Create mode.");
                 }
                 config.piece_size = args.piece_size.unwrap_or(config.piece_size);
-                let piece_length = 1usize
-                    << match config.piece_size {
-                        14..=27 => config.piece_size,
+
+                let tr_config = TrConfig {
+                    piece_length: 1usize
+                        << match config.piece_size {
+                            14..=27 => config.piece_size,
+                            _ => {
+                                eprintln!("Error: Piece size must be between 14 and 27.");
+                                wait_for_enter(config.wait_exit);
+                                exit(1);
+                            }
+                        },
+                    private: args.private || config.private,
+                    n_jobs: config.n_jobs,
+                    walk_mode: match args.walk_mode.unwrap_or(config.walk_mode) {
+                        0 => WalkMode::Default,
+                        1 => WalkMode::Alphabetical,
+                        2 => WalkMode::BreadthFirstAlphabetical,
+                        3 => WalkMode::BreadthFirstLevel,
+                        4 => WalkMode::FileSize,
                         _ => {
-                            eprintln!("Error: Piece size must be between 14 and 27.");
+                            eprintln!("Error: Invalid walk mode.");
                             wait_for_enter(config.wait_exit);
                             exit(1);
                         }
-                    };
+                    },
+                    source: args.source.or(config.source).filter(|s| !s.is_empty()),
+                };
+
                 config.tracker_list = if !args.announce.is_empty() {
                     if args.announce.iter().any(|s| s.is_empty()) {
                         Vec::new()
@@ -214,21 +234,6 @@ fn main() {
                     }
                 } else {
                     config.tracker_list
-                };
-                config.walk_mode = args.walk_mode.unwrap_or(config.walk_mode);
-                config.private = args.private || config.private;
-
-                let walk_mode = match config.walk_mode {
-                    0 => WalkMode::Default,
-                    1 => WalkMode::Alphabetical,
-                    2 => WalkMode::BreadthFirstAlphabetical,
-                    3 => WalkMode::BreadthFirstLevel,
-                    4 => WalkMode::FileSize,
-                    _ => {
-                        eprintln!("Error: Invalid walk mode.");
-                        wait_for_enter(config.wait_exit);
-                        exit(1);
-                    }
                 };
 
                 let torrent_path = match args.output {
@@ -257,10 +262,10 @@ fn main() {
                     println!("Torrent: {torrent_path}");
                     println!(
                         "Piece Length: {} bytes [{}]",
-                        piece_length,
-                        utils::human_size(piece_length)
+                        tr_config.piece_length,
+                        utils::human_size(tr_config.piece_length)
                     );
-                    if config.private {
+                    if tr_config.private {
                         println!("Private Torrent");
                     }
                 }
@@ -296,15 +301,7 @@ fn main() {
                     Some(String::from("UTF-8")),
                 );
 
-                if let Err(e) = torrent.create_torrent(
-                    input.clone(),
-                    piece_length,
-                    config.private,
-                    config.n_jobs,
-                    args.quiet,
-                    walk_mode,
-                    config.source,
-                ) {
+                if let Err(e) = torrent.create_torrent(input.clone(), &tr_config, args.quiet) {
                     eprintln!("Error creating torrent: {e}");
                     wait_for_enter(config.wait_exit);
                     exit(1);

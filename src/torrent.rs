@@ -8,19 +8,11 @@ use chrono::{Local, TimeZone};
 
 use crate::bencode::{bencode_int, bencode_string};
 use crate::tr_file::{Node, TrFile};
-use crate::tr_info::TrInfo;
+use crate::tr_info::{TrConfig, TrInfo};
 use crate::utils::{TrError, TrResult, human_size};
 
 const MAX_DISPLAYED_ANNOUNCES: usize = 20;
 const MAX_DISPLAYED_FILES: usize = 100;
-
-pub enum WalkMode {
-    Default,
-    Alphabetical,
-    BreadthFirstAlphabetical, // tu like
-    BreadthFirstLevel,        // qb like
-    FileSize,
-}
 
 pub struct Torrent {
     announce: Option<String>,
@@ -57,22 +49,10 @@ impl Torrent {
     pub fn create_torrent(
         &mut self,
         target_path: String,
-        piece_length: usize,
-        private: bool,
-        n_jobs: usize,
+        tr_config: &TrConfig,
         quiet: bool,
-        walk_mode: WalkMode,
-        source: Option<String>,
     ) -> TrResult<()> {
-        let info = TrInfo::new(
-            target_path,
-            piece_length,
-            private,
-            n_jobs,
-            quiet,
-            walk_mode,
-            source,
-        )?;
+        let info = TrInfo::new(target_path, tr_config, quiet)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())
