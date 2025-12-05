@@ -37,10 +37,10 @@ struct Config {
     piece_size: u8,
 
     #[serde(default)]
-    tracker_list: Vec<String>,
+    source: Option<String>,
 
     #[serde(default)]
-    source: Option<String>,
+    tracker_list: Vec<String>,
 }
 
 const fn def_piece_size() -> u8 {
@@ -59,8 +59,8 @@ impl Default for Config {
             walk_mode: 0,
             private: false,
             piece_size: DEF_PIECE_SIZE,
-            tracker_list: Vec::new(),
             source: None,
+            tracker_list: Vec::new(),
         }
     }
 }
