@@ -35,6 +35,9 @@ struct Config {
 
     #[serde(default)]
     tracker_list: Vec<String>,
+
+    #[serde(default)]
+    source: Option<String>,
 }
 
 const fn def_piece_size() -> u8 {
@@ -54,6 +57,7 @@ impl Default for Config {
             private: false,
             piece_size: DEF_PIECE_SIZE,
             tracker_list: Vec::new(),
+            source: None,
         }
     }
 }
@@ -93,6 +97,10 @@ struct Args {
     /// no creation date
     #[argh(switch, short = 'd')]
     no_date: bool,
+
+    /// torrent source
+    #[argh(option, short = 's')]
+    source: Option<String>,
 
     /// walk mode [default: 0]
     #[argh(option, short = 'w')]
@@ -157,6 +165,8 @@ fn main() {
             .map(|p| p.get())
             .unwrap_or(1),
     );
+
+    config.source = args.source.or(config.source).filter(|s| !s.is_empty());
 
     match args.input.len() {
         1 => {
@@ -293,6 +303,7 @@ fn main() {
                     config.n_jobs,
                     args.quiet,
                     walk_mode,
+                    config.source,
                 ) {
                     eprintln!("Error creating torrent: {e}");
                     wait_for_enter(config.wait_exit);

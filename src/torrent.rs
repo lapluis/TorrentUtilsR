@@ -62,8 +62,17 @@ impl Torrent {
         n_jobs: usize,
         quiet: bool,
         walk_mode: WalkMode,
+        source: Option<String>,
     ) -> TrResult<()> {
-        let info = TrInfo::new(target_path, piece_length, private, n_jobs, quiet, walk_mode)?;
+        let info = TrInfo::new(
+            target_path,
+            piece_length,
+            private,
+            n_jobs,
+            quiet,
+            walk_mode,
+            source,
+        )?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())
@@ -250,6 +259,10 @@ impl Torrent {
             private: match info_dict.get("private") {
                 Some(Bencode::Int(i)) => *i != 0,
                 _ => false,
+            },
+            source: match info_dict.get("source") {
+                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                _ => None,
             },
         };
 
@@ -457,6 +470,9 @@ impl Display for Torrent {
                     human_size(info.piece_length)
                 )?;
                 writeln!(f, "  Private: {}", info.private)?;
+                if let Some(source) = &info.source {
+                    writeln!(f, "  Source: {}", source)?;
+                }
 
                 if let Some(files) = &info.files {
                     writeln!(f, "  Files (RelPath [Length]):")?;

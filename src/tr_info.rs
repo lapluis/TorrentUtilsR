@@ -37,6 +37,7 @@ pub struct TrInfo {
     pub piece_length: usize,
     pub pieces: Vec<u8>,
     pub private: bool,
+    pub source: Option<String>,
 }
 
 impl TrInfo {
@@ -47,6 +48,7 @@ impl TrInfo {
         n_jobs: usize,
         quiet: bool,
         walk_mode: WalkMode,
+        source: Option<String>,
     ) -> TrResult<TrInfo> {
         let base_path = Path::new(&target_path);
         let name = base_path
@@ -154,6 +156,7 @@ impl TrInfo {
             piece_length,
             pieces,
             private,
+            source,
         })
     }
 
@@ -260,6 +263,10 @@ impl TrInfo {
         if self.private {
             bcode.extend(bencode_string("private"));
             bcode.extend(bencode_uint(1));
+        }
+        if self.source.is_some() {
+            bcode.extend(bencode_string("source"));
+            bcode.extend(bencode_string(self.source.as_ref().unwrap()));
         }
         bcode.push(b'e');
         bcode
