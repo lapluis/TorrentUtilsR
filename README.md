@@ -63,7 +63,7 @@ TorrentUtilsR path/to/data example.torrent
 ### Command Line Options
 
 ```
-Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-w <walk-mode>] [-f] [-j <n-jobs>] [-q] [-t] [-e]
+Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-s <source>] [-w <walk-mode>] [-f] [-j <n-jobs>] [-q] [-t] [-e]
 
 A utility for working with torrent files.
 
@@ -79,6 +79,7 @@ Options:
   -p, --private     private torrent, overrides config
   -c, --comment     comment
   -d, --no-date     no creation date
+  -s, --source      torrent source
   -w, --walk-mode   walk mode [default: 0]
   -f, --force       force overwrite
   -j, --n-jobs      number of threads to use (only for verify mode) [default: 1]
@@ -112,6 +113,8 @@ walk_mode = 0
 private = false
 piece_size = 22
 
+source = "ExampleSource"
+
 tracker_list = [
     "http://nyaa.tracker.wf:7777/announce",
     "udp://tracker.torrent.eu.org:451/announce",
@@ -128,6 +131,7 @@ tracker_list = [
 - **`private`**: Boolean, creates private torrents by default
 - **`piece_size`**: Integer, piece size exponent (14-27), piece length will be 2^piece_size bytes
 - **`tracker_list`**: Array of tracker URLs to include in created torrents
+- **`source`**: Optional string, torrent source written into the torrent info metadata
 
 ## Examples
 
@@ -149,6 +153,15 @@ TorrentUtilsR "My Series/" \
   --private \
   --piece-size 22 \
   --comment "Complete series collection" \
+  --announce "http://private-tracker.example.com/announce"
+
+# Create torrent and set torrent source metadata
+TorrentUtilsR "My Series/" \
+  --output "My-Series-Complete-with-source.torrent" \
+  --private \
+  --piece-size 22 \
+  --comment "Complete series collection" \
+  --source "ExampleSource" \
   --announce "http://private-tracker.example.com/announce"
 
 # Create torrent with alphabetical file ordering
@@ -177,4 +190,4 @@ TorrentUtilsR ubuntu-22.04.torrent ~/Downloads/ubuntu-22.04/
 
 ## Thanks to
 
-https://github.com/airium/TorrentUtils
+[airium/TorrentUtils](https://github.com/airium/TorrentUtils)
