@@ -62,7 +62,7 @@ pub fn human_size(bytes: usize) -> String {
 
     for &(unit_size, unit_name) in UNITS {
         if bytes >= unit_size {
-            return if bytes % unit_size == 0 {
+            return if bytes.is_multiple_of(unit_size) {
                 format!("{} {}", bytes / unit_size, unit_name)
             } else {
                 let value = bytes as f64 / unit_size as f64;
