@@ -17,7 +17,7 @@ use tr_info::WalkMode;
 
 use crate::tr_info::TrConfig;
 
-const DEF_PIECE_SIZE: u8 = 20; // 1 << 16 = 65536 bytes = 64 KiB
+const DEF_PIECE_SIZE: u8 = 24; // 1 << 24 = 16777216 bytes = 16 MiB
 
 #[derive(Deserialize)]
 struct Config {
