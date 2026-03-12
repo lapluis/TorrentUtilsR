@@ -64,6 +64,7 @@ jobs:
         run: cargo build --target ${{ matrix.target }} --release
 
       - name: Prepare binary
+        id: prepare_binary
         shell: bash
         run: |
           set -euo pipefail
@@ -78,22 +79,22 @@ jobs:
             windows-2025)
               cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "target/$STAGING.exe"
               upx --best --ultra-brute "target/$STAGING.exe"
-              echo "ASSET=target/$STAGING.exe" >> $GITHUB_ENV
+              echo "asset=target/$STAGING.exe" >> "$GITHUB_OUTPUT"
               ;;
             windows-11-arm)
               cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "target/$STAGING.exe"
-              echo "ASSET=target/$STAGING.exe" >> $GITHUB_ENV
+              echo "asset=target/$STAGING.exe" >> "$GITHUB_OUTPUT"
               ;;
             macos-15)
               cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "target/$STAGING"
               chmod +x "target/$STAGING"
-              echo "ASSET=target/$STAGING" >> $GITHUB_ENV
+              echo "asset=target/$STAGING" >> "$GITHUB_OUTPUT"
               ;;
             *)
               # Linux
               cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "target/$STAGING"
               upx --best --ultra-brute "target/$STAGING"
-              echo "ASSET=target/$STAGING" >> $GITHUB_ENV
+              echo "asset=target/$STAGING" >> "$GITHUB_OUTPUT"
               ;;
           esac
 
@@ -102,11 +103,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.BIN_NAME }}-${{ matrix.target }}-${{ github.sha }}
-          path: ${{ env.ASSET }}
+          path: ${{ steps.prepare_binary.outputs.asset }}
           if-no-files-found: error
 
       - name: Upload to GitHub Release
         if: inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.release_tag }}" "${{ env.ASSET }}" --clobber
+        run: gh release upload "${{ inputs.release_tag }}" "${{ steps.prepare_binary.outputs.asset }}" --clobber
