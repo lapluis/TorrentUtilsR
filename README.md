@@ -73,7 +73,7 @@ Positional Arguments:
 Options:
   -g, --config      config file
   -o, --output      output path or torrent name (only for create mode)
-  -l, --piece-size  piece size (1 << n, 14..=27), overrides config [default: 20]
+  -l, --piece-size  piece size (1 << n, 14..=27), overrides config [default: 24]
   -a, --announce    announce URLs, multiple allowed, overrides config ("" to
                     clear)
   -p, --private     private torrent, overrides config
@@ -111,7 +111,7 @@ wait_exit = true
 n_jobs = 4
 walk_mode = 0
 private = false
-piece_size = 22
+piece_size = 22 # 22 -> 4 MiB pieces
 
 source = "ExampleSource"
 
