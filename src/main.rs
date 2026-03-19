@@ -19,6 +19,8 @@ use crate::tr_info::TrConfig;
 
 const DEF_PIECE_SIZE: u8 = 24; // 1 << 24 = 16777216 bytes = 16 MiB
 
+const NAME_VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
+
 #[derive(Deserialize)]
 struct Config {
     #[serde(default)]
@@ -128,6 +130,10 @@ struct Args {
     /// wait for Enter key before exiting
     #[argh(switch, short = 'e')]
     wait_exit: bool,
+
+    /// print version info and exit
+    #[argh(switch, short = 'v')]
+    version: bool,
 }
 
 fn get_config_path() -> String {
@@ -146,6 +152,11 @@ fn wait_for_enter(wait: bool) {
 
 fn main() {
     let args: Args = argh::from_env();
+
+    if args.version {
+        println!("{NAME_VERSION}");
+        return;
+    }
 
     let mut config: Config = std::fs::read_to_string(&args.config)
         .map_err(|_| ())
@@ -288,11 +299,7 @@ fn main() {
                         Some(announce_list)
                     },
                     args.comment,
-                    Some(format!(
-                        "{} {}",
-                        env!("CARGO_PKG_NAME"),
-                        env!("CARGO_PKG_VERSION")
-                    )),
+                    Some(NAME_VERSION.to_string()),
                     if args.no_date {
                         None
                     } else {

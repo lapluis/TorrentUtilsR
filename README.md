@@ -87,6 +87,7 @@ Options:
   -t, --print-tree  print torrent file tree, only for info mode
   -e, --wait-exit   wait for Enter key before exiting
   -h, --help        display usage information
+  -v, --version     print version info and exit
 ```
 
 #### Walk Modes
