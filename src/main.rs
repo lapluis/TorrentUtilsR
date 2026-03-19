@@ -81,7 +81,7 @@ struct Args {
     #[argh(option, short = 'o')]
     output: Option<String>,
 
-    /// piece size (1 << n, 14..=27), overrides config [default: 20]
+    /// piece size (1 << n, 14..=27), overrides config [default: 24]
     #[argh(option, short = 'l')]
     piece_size: Option<u8>,
 
