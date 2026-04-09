@@ -480,7 +480,12 @@ impl Display for Torrent {
                 )?;
 
                 if let Some(files) = &info.files {
-                    writeln!(f, "  Files (RelPath [Length]):")?;
+                    writeln!(
+                        f,
+                        "  Files:  {}",
+                        info.files.as_ref().map(|f| f.len()).unwrap_or(0)
+                    )?;
+                    writeln!(f, "  RelPath [Length]:")?;
                     let mut shown = 0;
                     let mut truncated = false;
                     for file in files {
