@@ -45,12 +45,6 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         run: sudo apt-get install -y musl-tools
 
-      - name: Install UPX
-        if: matrix.os == 'windows-2025' || matrix.os == 'ubuntu-24.04'
-        uses: crazy-max/ghaction-upx@v4
-        with:
-          install-only: true
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -78,7 +72,6 @@ jobs:
           case "${{ matrix.os }}" in
             windows-2025)
               cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "target/$STAGING.exe"
-              upx --best --ultra-brute "target/$STAGING.exe"
               echo "asset=target/$STAGING.exe" >> "$GITHUB_OUTPUT"
               ;;
             windows-11-arm)
@@ -93,7 +86,6 @@ jobs:
             *)
               # Linux
               cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "target/$STAGING"
-              upx --best --ultra-brute "target/$STAGING"
               echo "asset=target/$STAGING" >> "$GITHUB_OUTPUT"
               ;;
           esac
