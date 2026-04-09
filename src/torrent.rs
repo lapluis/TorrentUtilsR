@@ -372,7 +372,7 @@ impl Torrent {
                     let file_tree = Node::build_tree(files);
                     file_tree.print_tree();
                 } else if let Some(length) = info.length {
-                    println!("  [Single file, {} bytes ({})]", length, human_size(length));
+                    println!("  [Single file, {} ({})]", length, human_size(length));
                 } else {
                     println!("  [No files information available]");
                 }
@@ -463,7 +463,7 @@ impl Display for Torrent {
                             let path_str = file.path.join("/");
                             writeln!(
                                 f,
-                                "    - {path_str} [{} bytes ({})]",
+                                "    - {path_str} [{} ({})]",
                                 file.length,
                                 human_size(file.length)
                             )?;
