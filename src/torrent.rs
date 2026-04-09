@@ -443,16 +443,41 @@ impl Display for Torrent {
                     writeln!(f, "  Hash: {hash}")?;
                 }
 
+                writeln!(f, "  Private: {}", info.private)?;
+                if let Some(source) = &info.source {
+                    writeln!(f, "  Source: {}", source)?;
+                }
+
                 writeln!(
                     f,
                     "  Piece length: {} [{}]",
                     info.piece_length,
                     human_size(info.piece_length)
                 )?;
-                writeln!(f, "  Private: {}", info.private)?;
-                if let Some(source) = &info.source {
-                    writeln!(f, "  Source: {}", source)?;
-                }
+
+                let total_length = if let Some(files) = &info.files {
+                    files.iter().map(|f| f.length).sum()
+                } else if let Some(length) = info.length {
+                    length
+                } else {
+                    0
+                };
+                writeln!(
+                    f,
+                    "  Length: {} [{}]",
+                    total_length,
+                    human_size(total_length)
+                )?;
+
+                writeln!(
+                    f,
+                    "  Pieces: {}",
+                    if info.piece_length > 0 {
+                        (total_length + info.piece_length - 1) / info.piece_length
+                    } else {
+                        0
+                    }
+                )?;
 
                 if let Some(files) = &info.files {
                     writeln!(f, "  Files (RelPath [Length]):")?;
@@ -476,8 +501,6 @@ impl Display for Torrent {
                     if truncated {
                         writeln!(f, "    Truncated at {MAX_DISPLAYED_FILES} files...")?;
                     }
-                } else if let Some(length) = info.length {
-                    writeln!(f, "  Length: {length}")?;
                 }
             }
             None => {
