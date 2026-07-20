@@ -347,15 +347,15 @@ impl Torrent {
             bcode.extend(bencode_string("encoding"));
             bcode.extend(bencode_string(self.encoding.as_ref().unwrap()));
         }
+        if self.hash.is_some() {
+            bcode.extend(bencode_string("hash"));
+            bcode.extend(bencode_string(self.hash.as_ref().unwrap()));
+        }
         if self.info.is_some() {
             bcode.extend(bencode_string("info"));
             bcode.extend(self.info.as_ref().unwrap().bencode());
         } else {
             eprintln!("Warning: info dict is missing, creating empty bencode");
-        }
-        if self.hash.is_some() {
-            bcode.extend(bencode_string("hash"));
-            bcode.extend(bencode_string(self.hash.as_ref().unwrap()));
         }
         bcode.push(b'e');
         bcode
