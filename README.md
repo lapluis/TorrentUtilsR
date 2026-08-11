@@ -63,7 +63,7 @@ TorrentUtilsR path/to/data example.torrent
 ### Command Line Options
 
 ```
-Usage: TorrentUtilsR.exe [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-s <source>] [-w <walk-mode>] [-f] [-j <n-jobs>] [-q] [-t] [-e]
+Usage: TorrentUtilsR [<input...>] [-g <config>] [-o <output>] [-l <piece-size>] [-a <announce...>] [-p] [-c <comment>] [-d] [-s <source>] [-w <walk-mode>] [-f] [-j <n-jobs>] [-q] [-t] [-e]
 
 A utility for working with torrent files.
 
