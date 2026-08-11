@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   BIN_NAME: ${{ inputs.bin_name }}
@@ -39,8 +39,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          # The build script needs tags to distinguish release builds from commit builds.
-          fetch-depth: 0
+          # The build script needs tags, but not the repository's full history.
+          fetch-depth: 1
+          fetch-tags: true
 
       - name: Install musl-tools
         if: matrix.os == 'ubuntu-24.04'
@@ -56,7 +57,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --target ${{ matrix.target }} --release
+        run: cargo build --locked --target ${{ matrix.target }} --release
 
       - name: Prepare binary
         id: prepare_binary
@@ -92,15 +93,8 @@ jobs:
           esac
 
       - name: Upload artifact
-        if: inputs.release_tag == ''
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.BIN_NAME }}-${{ matrix.target }}-${{ github.sha }}
+          name: ${{ env.BIN_NAME }}-${{ matrix.target }}
           path: ${{ steps.prepare_binary.outputs.asset }}
           if-no-files-found: error
-
-      - name: Upload to GitHub Release
-        if: inputs.release_tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.release_tag }}" "${{ steps.prepare_binary.outputs.asset }}" --clobber

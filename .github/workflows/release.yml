@@ -6,42 +6,73 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  create-release:
+  validate-release:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      tag: ${{ steps.validate.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - name: Get tag
-        id: tag
-        run: echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-      - name: Create GitHub release (draft)
+          fetch-tags: true
+
+      - name: Validate tag against Cargo package version
+        id: validate
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ steps.tag.outputs.tag }}" --verify-tag --draft --title "${{ steps.tag.outputs.tag }}"
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+
+          if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+            echo "Release tag '$RELEASE_TAG' does not match Cargo package version '$PACKAGE_VERSION' (expected '$EXPECTED_TAG')." >&2
+            exit 1
+          fi
+
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   build-and-upload:
-    needs: create-release
+    needs: validate-release
     uses: ./.github/workflows/_build.yml
     with:
       bin_name: TorrentUtilsR
-      release_tag: ${{ needs.create-release.outputs.tag }}
+      release_tag: ${{ needs.validate-release.outputs.tag }}
 
   publish-release:
-    needs: [create-release, build-and-upload]
+    needs: [validate-release, build-and-upload]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
         with:
-          fetch-depth: 1
-      - name: Publish
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "${{ needs.create-release.outputs.tag }}" --draft=false
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG"
+          fi
+
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false

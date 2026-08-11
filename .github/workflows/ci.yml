@@ -5,11 +5,45 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  check-release-tag:
+    name: Check for release tag
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          fetch-tags: true
+
+      - name: Check whether this commit is a release
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+
+          if git tag --points-at "$GITHUB_SHA" --list "$EXPECTED_TAG" | grep -Fxq -- "$EXPECTED_TAG"; then
+            echo "Current commit has release tag '$EXPECTED_TAG'; skipping the duplicate CI build."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Current commit has no matching release tag; running CI build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    if: startsWith(github.ref, 'refs/heads/')
+    needs: check-release-tag
+    if: needs.check-release-tag.outputs.should_build == 'true'
     uses: ./.github/workflows/_build.yml
     with:
       bin_name: TorrentUtilsR
