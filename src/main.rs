@@ -285,12 +285,17 @@ fn main() {
                 };
 
                 let mut force_overwrite = args.force;
-                if config.confirm_overwrite && !force_overwrite && Path::new(&torrent_path).exists()
-                {
-                    if confirm_overwrite(&torrent_path) {
+                if !force_overwrite && Path::new(&torrent_path).exists() {
+                    if config.confirm_overwrite && confirm_overwrite(&torrent_path) {
                         force_overwrite = true;
-                    } else {
+                    } else if config.confirm_overwrite {
                         eprintln!("Creation cancelled; existing torrent file was not changed.");
+                        wait_for_enter(config.wait_exit);
+                        exit(1);
+                    } else {
+                        eprintln!(
+                            "Error writing torrent file: File already exists, use -f to overwrite"
+                        );
                         wait_for_enter(config.wait_exit);
                         exit(1);
                     }
