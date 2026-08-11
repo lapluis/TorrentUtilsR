@@ -19,7 +19,7 @@ use crate::tr_info::TrConfig;
 
 const DEF_PIECE_SIZE: u8 = 24; // 1 << 24 = 16777216 bytes = 16 MiB
 
-const NAME_VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
+const NAME_VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("TORRENTUTILSR_VERSION"));
 
 #[derive(Deserialize)]
 struct Config {
