@@ -1,7 +1,36 @@
 use indicatif::{ProgressBar, ProgressStyle};
-use std::fmt::{Display, Formatter, Result as fmtResult};
-use std::io::Error as ioError;
+use std::fmt::{Arguments, Display, Formatter, Result as fmtResult};
+use std::io::{Error as ioError, IsTerminal, Write, stderr};
 use std::{error, string};
+
+pub(crate) fn write_error(prefix: &str, detail: Arguments<'_>, newline: bool) {
+    let stderr = stderr();
+    let mut stderr = stderr.lock();
+
+    if stderr.is_terminal() {
+        let _ = write!(stderr, "\x1b[31m{prefix}\x1b[0m");
+    } else {
+        let _ = write!(stderr, "{prefix}");
+    }
+    let _ = stderr.write_fmt(detail);
+    if newline {
+        let _ = writeln!(stderr);
+    }
+}
+
+macro_rules! errprint {
+    ($prefix:expr, $($arg:tt)*) => {
+        $crate::utils::write_error($prefix, format_args!($($arg)*), false)
+    };
+}
+
+macro_rules! errprintln {
+    ($prefix:expr, $($arg:tt)*) => {
+        $crate::utils::write_error($prefix, format_args!($($arg)*), true)
+    };
+}
+
+pub(crate) use {errprint, errprintln};
 
 #[derive(Debug)]
 pub enum TrError {
