@@ -26,6 +26,9 @@ struct Config {
     #[serde(default)]
     wait_exit: bool,
 
+    #[serde(default)]
+    confirm_overwrite: bool,
+
     #[serde(default = "default_n_jobs")]
     n_jobs: usize,
 
@@ -57,6 +60,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             wait_exit: false,
+            confirm_overwrite: false,
             n_jobs: 1,
             walk_mode: 0,
             private: false,
@@ -148,6 +152,18 @@ fn wait_for_enter(wait: bool) {
         let _ = stdout().flush();
         let _ = stdin().read_line(&mut String::new());
     }
+}
+
+fn confirm_overwrite(torrent_path: &str) -> bool {
+    print!("Torrent file '{torrent_path}' already exists. Overwrite? [y/N]: ");
+    let _ = stdout().flush();
+
+    let mut answer = String::new();
+    if stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn main() {
@@ -268,6 +284,18 @@ fn main() {
                     None => format!("{input}.torrent"),
                 };
 
+                let mut force_overwrite = args.force;
+                if config.confirm_overwrite && !force_overwrite && Path::new(&torrent_path).exists()
+                {
+                    if confirm_overwrite(&torrent_path) {
+                        force_overwrite = true;
+                    } else {
+                        eprintln!("Creation cancelled; existing torrent file was not changed.");
+                        wait_for_enter(config.wait_exit);
+                        exit(1);
+                    }
+                }
+
                 if !args.quiet {
                     println!("Target:  {input}");
                     println!("Torrent: {torrent_path}");
@@ -314,7 +342,7 @@ fn main() {
                     exit(1);
                 }
 
-                if let Err(e) = torrent.write_to_file(torrent_path, args.force) {
+                if let Err(e) = torrent.write_to_file(torrent_path, force_overwrite) {
                     eprintln!("Error writing torrent file: {e}");
                     wait_for_enter(config.wait_exit);
                     exit(1);

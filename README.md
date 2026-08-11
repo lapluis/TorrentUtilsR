@@ -109,6 +109,7 @@ TorrentUtilsR supports configuration via a TOML file. By default, it looks for `
 ```toml
 # config.toml
 wait_exit = true
+confirm_overwrite = false
 n_jobs = 4
 walk_mode = 0
 private = false
@@ -127,6 +128,7 @@ tracker_list = [
 ### Configuration Options
 
 - **`wait_exit`**: Boolean, wait for Enter key before exiting
+- **`confirm_overwrite`**: Boolean, ask before overwriting an existing torrent file (default: false). Enter `y` or `yes` to overwrite; any other response cancels creation. `--force` bypasses the prompt
 - **`n_jobs`**: Integer, number of threads to use for verify mode (default: 1)
 - **`walk_mode`**: Integer (0-4), default file walking mode for directories
 - **`private`**: Boolean, creates private torrents by default
