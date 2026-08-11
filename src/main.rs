@@ -16,7 +16,7 @@ use torrent::Torrent;
 use tr_info::WalkMode;
 
 use crate::tr_info::TrConfig;
-use crate::utils::{errprint, errprintln};
+use crate::utils::{blueprintln, errprint, errprintln, greenprintln};
 
 const DEF_PIECE_SIZE: u8 = 24; // 1 << 24 = 16777216 bytes = 16 MiB
 
@@ -182,7 +182,7 @@ fn main() {
                 .map_err(|_| ())
                 .inspect(|_| {
                     if !args.quiet {
-                        println!("I: Config loaded.");
+                        greenprintln!("I:", " Config loaded.");
                     }
                 })
         })
@@ -203,8 +203,8 @@ fn main() {
             if input.ends_with(".torrent") {
                 // show info
                 if !args.quiet {
-                    println!("I: Info mode.");
-                    println!("Torrent: {input}");
+                    greenprintln!("I:", " Info mode.");
+                    blueprintln!("Torrent:", " {input}");
                 }
                 match Torrent::read_torrent(input.clone()) {
                     Ok(torrent) => {
@@ -223,7 +223,7 @@ fn main() {
             } else {
                 // create mode
                 if !args.quiet {
-                    println!("I: Create mode.");
+                    greenprintln!("I:", " Create mode.");
                 }
                 config.piece_size = args.piece_size.unwrap_or(config.piece_size);
 
@@ -304,10 +304,11 @@ fn main() {
                 }
 
                 if !args.quiet {
-                    println!("Target:  {input}");
-                    println!("Torrent: {torrent_path}");
-                    println!(
-                        "Piece Length: {} bytes [{}]",
+                    blueprintln!("Target:", "  {input}");
+                    blueprintln!("Torrent:", " {torrent_path}");
+                    blueprintln!(
+                        "Piece Length:",
+                        " {} bytes [{}]",
                         tr_config.piece_length,
                         utils::human_size(tr_config.piece_length)
                     );
@@ -371,9 +372,9 @@ fn main() {
                 exit(1);
             };
             if !args.quiet {
-                println!("I: Verify mode.");
-                println!("Target:  {target_path}");
-                println!("Torrent: {torrent_path}");
+                greenprintln!("I:", " Verify mode.");
+                blueprintln!("Target:", "  {target_path}");
+                blueprintln!("Torrent:", " {torrent_path}");
             }
 
             let torrent = match Torrent::read_torrent(torrent_path) {

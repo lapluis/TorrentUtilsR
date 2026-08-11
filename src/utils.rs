@@ -1,6 +1,6 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fmt::{Arguments, Display, Formatter, Result as fmtResult};
-use std::io::{Error as ioError, IsTerminal, Write, stderr};
+use std::io::{Error as ioError, IsTerminal, Write, stderr, stdout};
 use std::{error, string};
 
 pub(crate) fn write_error(prefix: &str, detail: Arguments<'_>, newline: bool) {
@@ -18,6 +18,19 @@ pub(crate) fn write_error(prefix: &str, detail: Arguments<'_>, newline: bool) {
     }
 }
 
+pub(crate) fn write_output(prefix: &str, detail: Arguments<'_>, color: &str) {
+    let stdout = stdout();
+    let mut stdout = stdout.lock();
+
+    if stdout.is_terminal() {
+        let _ = write!(stdout, "{color}{prefix}\x1b[0m");
+    } else {
+        let _ = write!(stdout, "{prefix}");
+    }
+    let _ = stdout.write_fmt(detail);
+    let _ = writeln!(stdout);
+}
+
 macro_rules! errprint {
     ($prefix:expr, $($arg:tt)*) => {
         $crate::utils::write_error($prefix, format_args!($($arg)*), false)
@@ -30,7 +43,19 @@ macro_rules! errprintln {
     };
 }
 
-pub(crate) use {errprint, errprintln};
+macro_rules! greenprintln {
+    ($prefix:expr, $($arg:tt)*) => {
+        $crate::utils::write_output($prefix, format_args!($($arg)*), "\x1b[32m")
+    };
+}
+
+macro_rules! blueprintln {
+    ($prefix:expr, $($arg:tt)*) => {
+        $crate::utils::write_output($prefix, format_args!($($arg)*), "\x1b[34m")
+    };
+}
+
+pub(crate) use {blueprintln, errprint, errprintln, greenprintln};
 
 #[derive(Debug)]
 pub enum TrError {
