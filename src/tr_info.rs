@@ -146,7 +146,7 @@ impl TrInfo {
                 });
             }
             WalkMode::FileSize => {
-                tr_files.sort_by(|a, b| b.length.cmp(&a.length));
+                tr_files.sort_by_key(|file| cmp::Reverse(file.length));
             }
         }
 
@@ -255,17 +255,17 @@ impl TrInfo {
     pub fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
-        if self.files.is_some() {
+        if let Some(files) = &self.files {
             bcode.extend(bencode_string("files"));
-            bcode.extend(bencode_file_list(self.files.as_ref().unwrap()));
+            bcode.extend(bencode_file_list(files));
         }
-        if self.length.is_some() {
+        if let Some(length) = self.length {
             bcode.extend(bencode_string("length"));
-            bcode.extend(bencode_uint(self.length.unwrap()));
+            bcode.extend(bencode_uint(length));
         }
-        if self.name.is_some() {
+        if let Some(name) = &self.name {
             bcode.extend(bencode_string("name"));
-            bcode.extend(bencode_string(self.name.as_ref().unwrap()));
+            bcode.extend(bencode_string(name));
         }
         bcode.extend(bencode_string("piece length"));
         bcode.extend(bencode_uint(self.piece_length));
@@ -277,9 +277,9 @@ impl TrInfo {
             bcode.extend(bencode_string("private"));
             bcode.extend(bencode_uint(1));
         }
-        if self.source.is_some() {
+        if let Some(source) = &self.source {
             bcode.extend(bencode_string("source"));
-            bcode.extend(bencode_string(self.source.as_ref().unwrap()));
+            bcode.extend(bencode_string(source));
         }
         bcode.push(b'e');
         bcode

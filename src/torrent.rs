@@ -315,14 +315,14 @@ impl Torrent {
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
-        if self.announce.is_some() {
+        if let Some(announce) = &self.announce {
             bcode.extend(bencode_string("announce"));
-            bcode.extend(bencode_string(self.announce.as_ref().unwrap()));
+            bcode.extend(bencode_string(announce));
         }
-        if self.announce_list.is_some() {
+        if let Some(announce_list) = &self.announce_list {
             bcode.extend(bencode_string("announce-list"));
             bcode.push(b'l');
-            for tier in self.announce_list.as_ref().unwrap() {
+            for tier in announce_list {
                 bcode.push(b'l');
                 for url in tier {
                     bcode.extend(bencode_string(url));
@@ -331,29 +331,29 @@ impl Torrent {
             }
             bcode.push(b'e');
         }
-        if self.comment.is_some() {
+        if let Some(comment) = &self.comment {
             bcode.extend(bencode_string("comment"));
-            bcode.extend(bencode_string(self.comment.as_ref().unwrap()));
+            bcode.extend(bencode_string(comment));
         }
-        if self.created_by.is_some() {
+        if let Some(created_by) = &self.created_by {
             bcode.extend(bencode_string("created by"));
-            bcode.extend(bencode_string(self.created_by.as_ref().unwrap()));
+            bcode.extend(bencode_string(created_by));
         }
-        if self.creation_date.is_some() {
+        if let Some(creation_date) = self.creation_date {
             bcode.extend(bencode_string("creation date"));
-            bcode.extend(bencode_int(self.creation_date.unwrap()));
+            bcode.extend(bencode_int(creation_date));
         }
-        if self.encoding.is_some() {
+        if let Some(encoding) = &self.encoding {
             bcode.extend(bencode_string("encoding"));
-            bcode.extend(bencode_string(self.encoding.as_ref().unwrap()));
+            bcode.extend(bencode_string(encoding));
         }
-        if self.hash.is_some() {
+        if let Some(hash) = &self.hash {
             bcode.extend(bencode_string("hash"));
-            bcode.extend(bencode_string(self.hash.as_ref().unwrap()));
+            bcode.extend(bencode_string(hash));
         }
-        if self.info.is_some() {
+        if let Some(info) = &self.info {
             bcode.extend(bencode_string("info"));
-            bcode.extend(self.info.as_ref().unwrap().bencode());
+            bcode.extend(info.bencode());
         } else {
             eprintln!("Warning: info dict is missing, creating empty bencode");
         }
@@ -457,10 +457,8 @@ impl Display for Torrent {
 
                 let total_length = if let Some(files) = &info.files {
                     files.iter().map(|f| f.length).sum()
-                } else if let Some(length) = info.length {
-                    length
                 } else {
-                    0
+                    info.length.unwrap_or_default()
                 };
                 writeln!(
                     f,
@@ -473,7 +471,7 @@ impl Display for Torrent {
                     f,
                     "  Pieces: {}",
                     if info.piece_length > 0 {
-                        (total_length + info.piece_length - 1) / info.piece_length
+                        total_length.div_ceil(info.piece_length)
                     } else {
                         0
                     }
