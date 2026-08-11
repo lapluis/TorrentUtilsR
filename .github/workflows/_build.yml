@@ -39,7 +39,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          # The build script needs tags to distinguish release builds from commit builds.
+          fetch-depth: 0
 
       - name: Install musl-tools
         if: matrix.os == 'ubuntu-24.04'
