@@ -5,18 +5,14 @@ use std::thread;
 
 use argh::FromArgs;
 use serde::Deserialize;
+use torrent_utils::{
+    CreateOptions, FileTree, ProgressReporter, Torrent, VerificationOptions, VerificationReport,
+    WalkMode, human_size,
+};
 
-mod bencode;
-mod torrent;
-mod tr_file;
-mod tr_info;
-mod utils;
+mod cli_output;
 
-use torrent::Torrent;
-use tr_info::WalkMode;
-
-use crate::tr_info::TrConfig;
-use crate::utils::{blueprintln, errprint, errprintln, greenprintln};
+use crate::cli_output::{CliProgress, blueprintln, errprint, errprintln, greenprintln};
 
 const DEF_PIECE_SIZE: u8 = 24; // 1 << 24 = 16777216 bytes = 16 MiB
 
@@ -167,6 +163,61 @@ fn confirm_overwrite(torrent_path: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+fn print_file_tree(torrent: &Torrent) {
+    match torrent.get_info() {
+        Some(info) => {
+            if let Some(name) = &info.name {
+                println!("{name}");
+            }
+            if let Some(files) = &info.files {
+                print!("{}", FileTree::build(files));
+            } else if let Some(length) = info.length {
+                println!("  [Single file, {} ({})]", length, human_size(length));
+            } else {
+                println!("  [No files information available]");
+            }
+        }
+        None => println!("[No torrent info available]"),
+    }
+}
+
+fn print_verification_report(report: &VerificationReport) {
+    let failed_piece_count = report.failed_pieces.len();
+    let failed_file_count = report.failed_files.len();
+
+    println!("Verification Result:");
+    println!(
+        "Pieces: {:8} total = {:8} passed + {failed_piece_count:8} failed",
+        report.total_pieces,
+        report.passed_pieces()
+    );
+    println!(
+        "Files:  {:8} total = {:8} passed + {failed_file_count:8} failed",
+        report.total_files,
+        report.passed_files()
+    );
+
+    if report.is_ok() {
+        println!("All files are OK.");
+    } else {
+        println!("\nSome files failed verification:");
+        for file in &report.failed_files {
+            let known_issue = if file.missing_or_size_mismatch {
+                " [missing or size mismatch]"
+            } else {
+                ""
+            };
+            println!(
+                "- {} ({} [{}]){}",
+                file.path,
+                file.length,
+                human_size(file.length),
+                known_issue
+            );
+        }
+    }
+}
+
 fn main() {
     let args: Args = argh::from_env();
 
@@ -209,7 +260,7 @@ fn main() {
                 match Torrent::read_torrent(input.clone()) {
                     Ok(torrent) => {
                         if args.print_tree {
-                            torrent.print_file_tree();
+                            print_file_tree(&torrent);
                         } else {
                             println!("{torrent}");
                         }
@@ -227,7 +278,7 @@ fn main() {
                 }
                 config.piece_size = args.piece_size.unwrap_or(config.piece_size);
 
-                let tr_config = TrConfig {
+                let tr_config = CreateOptions {
                     piece_length: 1usize
                         << match config.piece_size {
                             14..=27 => config.piece_size,
@@ -310,7 +361,7 @@ fn main() {
                         "Piece Length:",
                         " {} bytes [{}]",
                         tr_config.piece_length,
-                        utils::human_size(tr_config.piece_length)
+                        human_size(tr_config.piece_length)
                     );
                     if tr_config.private {
                         println!("Private Torrent");
@@ -344,7 +395,11 @@ fn main() {
                     Some(String::from("UTF-8")),
                 );
 
-                if let Err(e) = torrent.create_torrent(input.clone(), &tr_config, args.quiet) {
+                let progress = (!args.quiet).then(CliProgress::new);
+                let progress = progress
+                    .as_ref()
+                    .map(|progress| progress as &dyn ProgressReporter);
+                if let Err(e) = torrent.create_torrent(input, &tr_config, progress) {
                     errprintln!("Error creating torrent:", " {e}");
                     wait_for_enter(config.wait_exit);
                     exit(1);
@@ -419,10 +474,20 @@ fn main() {
                 }
             }
 
-            if let Err(e) = tr_info.verify(target_path, config.n_jobs, args.quiet) {
-                errprintln!("Error during verification:", " {e}");
-                wait_for_enter(config.wait_exit);
-                exit(1);
+            let progress = (!args.quiet).then(CliProgress::new);
+            let progress = progress
+                .as_ref()
+                .map(|progress| progress as &dyn ProgressReporter);
+            let verify_options = VerificationOptions {
+                n_jobs: config.n_jobs,
+            };
+            match tr_info.verify(&target_path, &verify_options, progress) {
+                Ok(report) => print_verification_report(&report),
+                Err(e) => {
+                    errprintln!("Error during verification:", " {e}");
+                    wait_for_enter(config.wait_exit);
+                    exit(1);
+                }
             }
         }
         _ => {

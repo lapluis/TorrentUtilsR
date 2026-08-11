@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::path::{Path, PathBuf};
 
 use natord::compare_ignore_case;
@@ -6,6 +7,7 @@ use natord::compare_ignore_case;
 use crate::bencode::{bencode_string, bencode_string_list, bencode_uint};
 use crate::utils::human_size;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrFile {
     pub length: usize,
     pub path: Vec<String>,
@@ -43,22 +45,22 @@ pub fn bencode_file_list(list: &[TrFile]) -> Vec<u8> {
 }
 
 #[derive(Debug)]
-pub struct Node {
+pub struct FileTree {
     name: String,
     length: Option<usize>, // None -> dir，Some(size) -> file
-    children: HashMap<String, Node>,
+    children: HashMap<String, FileTree>,
 }
 
-impl Node {
+impl FileTree {
     fn new_dir(name: &str) -> Self {
-        Node {
+        FileTree {
             name: name.into(),
             length: None,
             children: HashMap::new(),
         }
     }
     fn new_file(name: &str, size: usize) -> Self {
-        Node {
+        FileTree {
             name: name.into(),
             length: Some(size),
             children: HashMap::new(),
@@ -75,36 +77,37 @@ impl Node {
                 .and_modify(|n| {
                     n.length = Some(size);
                 })
-                .or_insert_with(|| Node::new_file(&segments[0], size));
+                .or_insert_with(|| FileTree::new_file(&segments[0], size));
         } else {
             let dir = self
                 .children
                 .entry(segments[0].clone())
-                .or_insert_with(|| Node::new_dir(&segments[0]));
+                .or_insert_with(|| FileTree::new_dir(&segments[0]));
             dir.insert_path(&segments[1..], size);
         }
     }
 
-    pub fn build_tree(files: &[TrFile]) -> Node {
-        let mut root = Node::new_dir("");
+    pub fn build(files: &[TrFile]) -> FileTree {
+        let mut root = FileTree::new_dir("");
         for f in files {
             root.insert_path(&f.path, f.length);
         }
         root
     }
 
-    pub fn print_tree(&self) {
+    fn fmt_tree(&self, f: &mut Formatter<'_>) -> FmtResult {
         let mut names: Vec<&String> = self.children.keys().collect();
         names.sort_by(|a, b| compare_ignore_case(a, b));
 
         for (idx, name) in names.iter().enumerate() {
             let last = idx == names.len() - 1;
-            let child = self.children.get(*name).unwrap();
-            child.print_branch("", last);
+            let child = self.children.get(*name).expect("tree child exists");
+            child.fmt_branch(f, "", last)?;
         }
+        Ok(())
     }
 
-    fn print_branch(&self, prefix: &str, is_last: bool) {
+    fn fmt_branch(&self, f: &mut Formatter<'_>, prefix: &str, is_last: bool) -> FmtResult {
         let (connector, child_prefix) = if is_last {
             ("└── ", "    ")
         } else {
@@ -112,15 +115,13 @@ impl Node {
         };
 
         match self.length {
-            Some(sz) => println!(
-                "{}{}{} ({} [{}])",
-                prefix,
-                connector,
+            Some(sz) => writeln!(
+                f,
+                "{prefix}{connector}{} ({sz} [{}])",
                 self.name,
-                sz,
                 human_size(sz)
-            ),
-            None => println!("{}{}{}", prefix, connector, self.name),
+            )?,
+            None => writeln!(f, "{prefix}{connector}{}", self.name)?,
         }
 
         let mut names: Vec<&String> = self.children.keys().collect();
@@ -129,8 +130,15 @@ impl Node {
         let new_prefix = format!("{prefix}{child_prefix}");
         for (idx, name) in names.iter().enumerate() {
             let last = idx == names.len() - 1;
-            let child = self.children.get(*name).unwrap();
-            child.print_branch(&new_prefix, last);
+            let child = self.children.get(*name).expect("tree child exists");
+            child.fmt_branch(f, &new_prefix, last)?;
         }
+        Ok(())
+    }
+}
+
+impl Display for FileTree {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        self.fmt_tree(f)
     }
 }

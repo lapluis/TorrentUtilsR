@@ -1,19 +1,20 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result as fmtResult};
 use std::fs::{File, read};
-use std::io::{Error as ioError, ErrorKind, Result as ioResult, Write, stdout};
+use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
 use chrono::{Local, TimeZone};
 
 use crate::bencode::{bencode_int, bencode_string};
-use crate::tr_file::{Node, TrFile};
-use crate::tr_info::{TrConfig, TrInfo};
+use crate::tr_file::TrFile;
+use crate::tr_info::{CreateOptions, ProgressReporter, TrInfo};
 use crate::utils::{TrError, TrResult, human_size};
 
 const MAX_DISPLAYED_ANNOUNCES: usize = 20;
 const MAX_DISPLAYED_FILES: usize = 100;
 
+#[derive(Clone, Debug)]
 pub struct Torrent {
     announce: Option<String>,
     announce_list: Option<Vec<Vec<String>>>,
@@ -48,29 +49,36 @@ impl Torrent {
 
     pub fn create_torrent(
         &mut self,
-        target_path: String,
-        tr_config: &TrConfig,
-        quiet: bool,
+        target_path: impl AsRef<Path>,
+        tr_config: &CreateOptions,
+        progress: Option<&dyn ProgressReporter>,
     ) -> TrResult<()> {
-        let info = TrInfo::new(target_path, tr_config, quiet)?;
+        let info = TrInfo::new(target_path, tr_config, progress)?;
         self.hash = Some(info.hash());
         self.info = Some(info);
         Ok(())
     }
 
-    pub fn write_to_file(&self, torrent_path: String, force: bool) -> ioResult<()> {
-        if !force && Path::new(&torrent_path).exists() {
+    pub fn write_to_file(&self, torrent_path: impl AsRef<Path>, force: bool) -> TrResult<()> {
+        let torrent_path = torrent_path.as_ref();
+        if !force && torrent_path.exists() {
             return Err(ioError::new(
                 ErrorKind::AlreadyExists,
                 "File already exists, use -f to overwrite",
-            ));
+            )
+            .into());
         }
         let mut file = File::create(torrent_path)?;
-        file.write_all(&self.bencode())?;
+        file.write_all(&self.to_bytes()?)?;
         Ok(())
     }
 
-    pub fn read_torrent(tr_path: String) -> TrResult<Self> {
+    pub fn read_torrent(tr_path: impl AsRef<Path>) -> TrResult<Self> {
+        let bcode = read(tr_path)?;
+        Self::from_bytes(&bcode)
+    }
+
+    pub fn from_bytes(bcode: &[u8]) -> TrResult<Self> {
         enum Bencode<'a> {
             Int(usize),
             UInt(i64),
@@ -79,7 +87,6 @@ impl Torrent {
             Dict(HashMap<String, Bencode<'a>>),
         }
 
-        let bcode = read(&tr_path)?;
         let mut pos = 0;
 
         fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Bencode<'a>> {
@@ -160,7 +167,7 @@ impl Torrent {
             }
         }
 
-        let root = parse_bencode(&bcode, &mut pos)?;
+        let root = parse_bencode(bcode, &mut pos)?;
         let tr_dict = match root {
             Bencode::Dict(m) => m,
             _ => {
@@ -312,7 +319,7 @@ impl Torrent {
         self.info.as_ref()
     }
 
-    fn bencode(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> TrResult<Vec<u8>> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
         if let Some(announce) = &self.announce {
@@ -355,32 +362,10 @@ impl Torrent {
             bcode.extend(bencode_string("info"));
             bcode.extend(info.bencode());
         } else {
-            eprintln!("Warning: info dict is missing, creating empty bencode");
+            return Err(TrError::MissingField(String::from("info")));
         }
         bcode.push(b'e');
-        bcode
-    }
-
-    pub fn print_file_tree(&self) {
-        match &self.info {
-            Some(info) => {
-                if let Some(name) = &info.name {
-                    println!("{name}");
-                }
-                let _ = stdout().flush();
-                if let Some(files) = &info.files {
-                    let file_tree = Node::build_tree(files);
-                    file_tree.print_tree();
-                } else if let Some(length) = info.length {
-                    println!("  [Single file, {} ({})]", length, human_size(length));
-                } else {
-                    println!("  [No files information available]");
-                }
-            }
-            None => {
-                println!("[No torrent info available]");
-            }
-        }
+        Ok(bcode)
     }
 }
 

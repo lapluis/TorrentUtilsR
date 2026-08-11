@@ -3,9 +3,8 @@ use std::cmp;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{File, metadata};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
-use indicatif::ProgressBar;
 use natord::compare_ignore_case;
 use rayon::{ThreadPoolBuilder, prelude::*};
 use sha1::{Digest, Sha1};
@@ -13,11 +12,13 @@ use walkdir::WalkDir;
 
 use crate::bencode::{bencode_bytes, bencode_string, bencode_uint};
 use crate::tr_file::{TrFile, bencode_file_list};
-use crate::utils::{TrError, TrResult, finish_progress_bar, human_size, make_progress_bar};
+use crate::utils::{TrError, TrResult};
 
 const SHA1_HASH_SIZE: usize = 20;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WalkMode {
+    #[default]
     Default,
     Alphabetical,
     BreadthFirstAlphabetical, // tu like
@@ -25,12 +26,27 @@ pub enum WalkMode {
     FileSize,
 }
 
-pub struct TrConfig {
+#[derive(Clone, Debug)]
+pub struct CreateOptions {
     pub piece_length: usize,
     pub private: bool,
     pub n_jobs: usize,
     pub walk_mode: WalkMode,
     pub source: Option<String>,
+}
+
+/// Backwards-compatible name for [`CreateOptions`].
+pub type TrConfig = CreateOptions;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerificationOptions {
+    pub n_jobs: usize,
+}
+
+impl Default for VerificationOptions {
+    fn default() -> Self {
+        Self { n_jobs: 1 }
+    }
 }
 
 struct FileHashInfo {
@@ -45,6 +61,44 @@ struct FailedInfo {
     pieces: HashSet<usize>,
 }
 
+/// Receives piece-processing progress without coupling the core library to a UI.
+pub trait ProgressReporter: Sync {
+    fn begin(&self, total: usize);
+    fn advance(&self, delta: usize);
+    fn finish(&self);
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FailedFile {
+    pub index: usize,
+    pub path: String,
+    pub length: usize,
+    pub missing_or_size_mismatch: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerificationReport {
+    pub total_pieces: usize,
+    pub failed_pieces: Vec<usize>,
+    pub total_files: usize,
+    pub failed_files: Vec<FailedFile>,
+}
+
+impl VerificationReport {
+    pub fn passed_pieces(&self) -> usize {
+        self.total_pieces.saturating_sub(self.failed_pieces.len())
+    }
+
+    pub fn passed_files(&self) -> usize {
+        self.total_files.saturating_sub(self.failed_files.len())
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.failed_pieces.is_empty() && self.failed_files.is_empty()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct TrInfo {
     pub files: Option<Vec<TrFile>>,
     pub length: Option<usize>,
@@ -56,13 +110,31 @@ pub struct TrInfo {
 }
 
 impl TrInfo {
-    pub fn new(target_path: String, tr_config: &TrConfig, quiet: bool) -> TrResult<TrInfo> {
-        let base_path = Path::new(&target_path);
+    pub fn new(
+        target_path: impl AsRef<Path>,
+        tr_config: &CreateOptions,
+        progress: Option<&dyn ProgressReporter>,
+    ) -> TrResult<TrInfo> {
+        if tr_config.piece_length == 0 {
+            return Err(TrError::InvalidConfig(String::from(
+                "piece length must be greater than zero",
+            )));
+        }
+        if tr_config.n_jobs == 0 {
+            return Err(TrError::InvalidConfig(String::from(
+                "number of jobs must be greater than zero",
+            )));
+        }
+
+        let base_path = target_path.as_ref();
         let name = base_path
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| {
-                TrError::InvalidPath(format!("Invalid file name in path: {target_path}"))
+                TrError::InvalidPath(format!(
+                    "Invalid file name in path: {}",
+                    base_path.display()
+                ))
             })?;
         let mut single_file = false;
 
@@ -155,7 +227,7 @@ impl TrInfo {
             &tr_files,
             tr_config.piece_length,
             tr_config.n_jobs,
-            quiet,
+            progress,
         )?;
 
         Ok(TrInfo {
@@ -173,77 +245,97 @@ impl TrInfo {
         })
     }
 
-    pub fn verify(&self, target_path: String, n_jobs: usize, quiet: bool) -> TrResult<()> {
-        let base_path = Path::new(&target_path);
-        let tr_files = match self.files {
-            Some(ref files) => files,
-            None => &vec![TrFile {
-                length: self
-                    .length
-                    .ok_or_else(|| TrError::MissingField(String::from("length")))?,
-                path: Vec::new(),
-            }],
+    pub fn verify(
+        &self,
+        target_path: impl AsRef<Path>,
+        options: &VerificationOptions,
+        progress: Option<&dyn ProgressReporter>,
+    ) -> TrResult<VerificationReport> {
+        if self.piece_length == 0 {
+            return Err(TrError::InvalidTorrent(String::from(
+                "piece length must be greater than zero",
+            )));
+        }
+        if options.n_jobs == 0 {
+            return Err(TrError::InvalidConfig(String::from(
+                "number of jobs must be greater than zero",
+            )));
+        }
+        if !self.pieces.len().is_multiple_of(SHA1_HASH_SIZE) {
+            return Err(TrError::InvalidTorrent(String::from(
+                "pieces length is not a multiple of the SHA-1 hash size",
+            )));
+        }
+
+        let base_path = target_path.as_ref();
+        let single_file;
+        let tr_files: &[TrFile] = match &self.files {
+            Some(files) => files,
+            None => {
+                single_file = vec![TrFile {
+                    length: self
+                        .length
+                        .ok_or_else(|| TrError::MissingField(String::from("length")))?,
+                    path: Vec::new(),
+                }];
+                &single_file
+            }
         };
 
         let piece_slices: Vec<[u8; SHA1_HASH_SIZE]> = split_hash_pieces(&self.pieces);
+        let expected_piece_count = tr_files
+            .iter()
+            .try_fold(0usize, |total, file| total.checked_add(file.length))
+            .ok_or_else(|| TrError::InvalidTorrent(String::from("total file size overflow")))?
+            .div_ceil(self.piece_length);
+        if piece_slices.len() != expected_piece_count {
+            return Err(TrError::InvalidTorrent(format!(
+                "piece count mismatch: expected {expected_piece_count}, found {}",
+                piece_slices.len()
+            )));
+        }
 
         let failed_info = verify_tr_files(
             &piece_slices,
             tr_files,
             base_path,
             self.piece_length,
-            n_jobs,
-            quiet,
+            options.n_jobs,
+            progress,
         )?;
 
-        println!("Verification Result:");
-
         let total_pieces = piece_slices.len();
-        let failed_piece_count = failed_info.pieces.len();
-        let passed_piece_count = total_pieces - failed_piece_count;
-
         let total_files = tr_files.len();
-        let failed_file_count = failed_info.files.len();
-        let passed_file_count = total_files - failed_file_count;
-
-        println!(
-            "Pieces: {total_pieces:8} total = {passed_piece_count:8} passed + {failed_piece_count:8} failed"
-        );
-        println!(
-            "Files:  {total_files:8} total = {passed_file_count:8} passed + {failed_file_count:8} failed"
-        );
-
-        if failed_info.files.is_empty() {
-            println!("All files are OK.");
-        } else {
-            println!("\nSome files failed verification:");
-            let mut failed_files_vec: Vec<usize> = failed_info.files.iter().cloned().collect();
-            failed_files_vec.sort();
-            for file_index in failed_files_vec {
+        let mut failed_pieces: Vec<usize> = failed_info.pieces.iter().copied().collect();
+        failed_pieces.sort_unstable();
+        let mut failed_file_indexes: Vec<usize> = failed_info.files.iter().copied().collect();
+        failed_file_indexes.sort_unstable();
+        let failed_files = failed_file_indexes
+            .into_iter()
+            .map(|file_index| {
                 let tr_file = &tr_files[file_index];
-                let rel_path = if tr_file.path.is_empty() {
+                let path = if tr_file.path.is_empty() {
                     self.name
-                        .as_ref()
+                        .clone()
                         .ok_or_else(|| TrError::MissingField(String::from("name")))?
-                        .to_string()
                 } else {
                     tr_file.path.join("/")
                 };
-                let known_issue = if failed_info.files_known.contains(&file_index) {
-                    " [missing or size mismatch]"
-                } else {
-                    ""
-                };
-                println!(
-                    "- {} ({} [{}]){}",
-                    rel_path,
-                    tr_file.length,
-                    human_size(tr_file.length),
-                    known_issue
-                );
-            }
-        }
-        Ok(())
+                Ok(FailedFile {
+                    index: file_index,
+                    path,
+                    length: tr_file.length,
+                    missing_or_size_mismatch: failed_info.files_known.contains(&file_index),
+                })
+            })
+            .collect::<TrResult<Vec<_>>>()?;
+
+        Ok(VerificationReport {
+            total_pieces,
+            failed_pieces,
+            total_files,
+            failed_files,
+        })
     }
 
     pub fn get_name(&self) -> TrResult<String> {
@@ -269,10 +361,8 @@ impl TrInfo {
         }
         bcode.extend(bencode_string("piece length"));
         bcode.extend(bencode_uint(self.piece_length));
-        if !self.pieces.is_empty() {
-            bcode.extend(bencode_string("pieces"));
-            bcode.extend(bencode_bytes(&self.pieces));
-        }
+        bcode.extend(bencode_string("pieces"));
+        bcode.extend(bencode_bytes(&self.pieces));
         if self.private {
             bcode.extend(bencode_string("private"));
             bcode.extend(bencode_uint(1));
@@ -298,19 +388,21 @@ fn hash_tr_files(
     tr_files: &[TrFile],
     chunk_size: usize,
     n_jobs: usize,
-    quiet: bool,
+    progress: Option<&dyn ProgressReporter>,
 ) -> TrResult<Vec<u8>> {
     let piece_file_info = calc_piece_file_info(tr_files, chunk_size);
     let pieces_count = piece_file_info.len();
 
-    let pb = make_progress_bar(pieces_count, quiet);
+    if let Some(progress) = progress {
+        progress.begin(pieces_count);
+    }
 
     let piece_slices = hash_piece_file(
         chunk_size,
         &piece_file_info,
         tr_files,
         base_path,
-        &pb,
+        progress,
         n_jobs,
     )?;
 
@@ -319,7 +411,9 @@ fn hash_tr_files(
         pieces.extend_from_slice(&slice);
     }
 
-    finish_progress_bar(pb, pieces_count);
+    if let Some(progress) = progress {
+        progress.finish();
+    }
 
     Ok(pieces)
 }
@@ -330,11 +424,11 @@ fn verify_tr_files(
     base_path: &Path,
     piece_length: usize,
     n_jobs: usize,
-    quiet: bool,
+    progress: Option<&dyn ProgressReporter>,
 ) -> TrResult<FailedInfo> {
     let piece_file_info = calc_piece_file_info(tr_files, piece_length);
 
-    let mut file_status_map: HashMap<String, bool> = HashMap::new();
+    let mut file_status_map: HashMap<PathBuf, bool> = HashMap::new();
     let mut failed_info = FailedInfo {
         files: HashSet::new(),
         files_known: HashSet::new(),
@@ -342,20 +436,18 @@ fn verify_tr_files(
     };
     let pieces_count = piece_slices.len();
 
-    let pb = make_progress_bar(pieces_count, quiet);
+    if let Some(progress) = progress {
+        progress.begin(pieces_count);
+    }
 
     for (i, piece) in piece_file_info.iter().enumerate() {
         let mut files_ok: bool = true;
         for file_hash_info in piece {
             let tr_file = &tr_files[file_hash_info.file_index];
             let f_path = tr_file.join_full_path(base_path);
-            let f_path_str = f_path
-                .to_str()
-                .ok_or_else(|| TrError::InvalidPath(String::from("Path contains invalid UTF-8")))?
-                .to_string();
-            match file_status_map.entry(f_path_str) {
+            match file_status_map.entry(f_path) {
                 Entry::Vacant(entry) => {
-                    let file_ok = metadata(&f_path)
+                    let file_ok = metadata(entry.key())
                         .ok()
                         .is_some_and(|meta| meta.len() == tr_file.length as u64);
                     if !file_ok {
@@ -376,8 +468,8 @@ fn verify_tr_files(
             for file_hash_info in piece {
                 failed_info.files.insert(file_hash_info.file_index);
             }
-            if let Some(ref pb) = pb {
-                pb.inc(1);
+            if let Some(progress) = progress {
+                progress.advance(1);
             }
             continue;
         }
@@ -399,7 +491,7 @@ fn verify_tr_files(
         &piece_file_info,
         tr_files,
         base_path,
-        &pb,
+        progress,
         n_jobs,
     )?;
     for (i, piece_calc_hash) in calc_piece_slices.iter().enumerate() {
@@ -411,7 +503,9 @@ fn verify_tr_files(
         }
     }
 
-    finish_progress_bar(pb, pieces_count);
+    if let Some(progress) = progress {
+        progress.finish();
+    }
 
     Ok(failed_info)
 }
@@ -467,7 +561,7 @@ fn hash_piece_file(
     piece_file_info: &[Vec<FileHashInfo>],
     tr_files: &[TrFile],
     base_path: &Path,
-    pb: &Option<ProgressBar>,
+    progress: Option<&dyn ProgressReporter>,
     n_jobs: usize,
 ) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
     let f_path_list: Vec<_> = tr_files
@@ -489,7 +583,7 @@ fn hash_piece_file(
 
                     FIXED_BUFFER.with(|buf_cell| -> TrResult<()> {
                         let mut buf = buf_cell.borrow_mut();
-                        if buf.capacity() < piece_length {
+                        if buf.len() < piece_length {
                             buf.resize(piece_length, 0);
                         }
 
@@ -499,8 +593,8 @@ fn hash_piece_file(
                             f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
 
                             let buf_slice = &mut buf[..file_hash_info.length];
-                            let n = f.read(buf_slice)?;
-                            hasher.update(&buf_slice[..n]);
+                            f.read_exact(buf_slice)?;
+                            hasher.update(buf_slice);
                         }
                         Ok(())
                     })?;
@@ -509,8 +603,8 @@ fn hash_piece_file(
                     let mut hash_arr = [0u8; SHA1_HASH_SIZE];
                     hash_arr.copy_from_slice(&calc_hash);
 
-                    if let Some(pb) = pb {
-                        pb.inc(1);
+                    if let Some(progress) = progress {
+                        progress.advance(1);
                     }
 
                     Ok(hash_arr)

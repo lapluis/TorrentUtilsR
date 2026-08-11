@@ -1,65 +1,11 @@
-use indicatif::{ProgressBar, ProgressStyle};
-use std::fmt::{Arguments, Display, Formatter, Result as fmtResult};
-use std::io::{Error as ioError, IsTerminal, Write, stderr, stdout};
+use std::fmt::{Display, Formatter, Result as fmtResult};
+use std::io::Error as ioError;
 use std::{error, string};
-
-pub(crate) fn write_error(prefix: &str, detail: Arguments<'_>, newline: bool) {
-    let stderr = stderr();
-    let mut stderr = stderr.lock();
-
-    if stderr.is_terminal() {
-        let _ = write!(stderr, "\x1b[31m{prefix}\x1b[0m");
-    } else {
-        let _ = write!(stderr, "{prefix}");
-    }
-    let _ = stderr.write_fmt(detail);
-    if newline {
-        let _ = writeln!(stderr);
-    }
-}
-
-pub(crate) fn write_output(prefix: &str, detail: Arguments<'_>, color: &str) {
-    let stdout = stdout();
-    let mut stdout = stdout.lock();
-
-    if stdout.is_terminal() {
-        let _ = write!(stdout, "{color}{prefix}\x1b[0m");
-    } else {
-        let _ = write!(stdout, "{prefix}");
-    }
-    let _ = stdout.write_fmt(detail);
-    let _ = writeln!(stdout);
-}
-
-macro_rules! errprint {
-    ($prefix:expr, $($arg:tt)*) => {
-        $crate::utils::write_error($prefix, format_args!($($arg)*), false)
-    };
-}
-
-macro_rules! errprintln {
-    ($prefix:expr, $($arg:tt)*) => {
-        $crate::utils::write_error($prefix, format_args!($($arg)*), true)
-    };
-}
-
-macro_rules! greenprintln {
-    ($prefix:expr, $($arg:tt)*) => {
-        $crate::utils::write_output($prefix, format_args!($($arg)*), "\x1b[32m")
-    };
-}
-
-macro_rules! blueprintln {
-    ($prefix:expr, $($arg:tt)*) => {
-        $crate::utils::write_output($prefix, format_args!($($arg)*), "\x1b[34m")
-    };
-}
-
-pub(crate) use {blueprintln, errprint, errprintln, greenprintln};
 
 #[derive(Debug)]
 pub enum TrError {
     IO(ioError),
+    InvalidConfig(String),
     InvalidPath(String),
     InvalidTorrent(String),
     MissingField(String),
@@ -71,6 +17,7 @@ impl Display for TrError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmtResult {
         match self {
             TrError::IO(err) => write!(f, "IO error: {err}"),
+            TrError::InvalidConfig(msg) => write!(f, "Invalid configuration: {msg}"),
             TrError::InvalidPath(path) => write!(f, "Invalid path: {path}"),
             TrError::InvalidTorrent(msg) => write!(f, "Invalid torrent: {msg}"),
             TrError::MissingField(field) => write!(f, "Missing field: {field}"),
@@ -127,29 +74,4 @@ pub fn human_size(bytes: usize) -> String {
     }
 
     format!("{bytes} B")
-}
-
-pub fn make_progress_bar(total: usize, quiet: bool) -> Option<ProgressBar> {
-    if quiet {
-        None
-    } else {
-        let pb = ProgressBar::new(total as u64);
-        pb.set_style(
-            ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
-        Some(pb)
-    }
-}
-
-pub fn finish_progress_bar(pb: Option<ProgressBar>, pieces_count: usize) {
-    if let Some(pb) = pb {
-        let elapsed = pb.elapsed();
-        pb.finish_and_clear();
-        println!(
-            "\x1b[32m✓\x1b[0m [\x1b[36m########################################\x1b[0m] [{pieces_count}/{pieces_count}] pieces (100%, eta: 0s)"
-        );
-        println!("Processed {pieces_count} pieces in {elapsed:.2?}");
-    }
 }
