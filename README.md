@@ -9,6 +9,33 @@ A fast and reliable command-line utility for creating, reading, and verifying Bi
 - **Verify torrents** against existing files with detailed reporting
 - **Configurable** with TOML configuration file support
 
+## Library API
+
+The project also exposes a `torrent_utils` library target. The library handles torrent creation,
+parsing, serialization, and verification, while terminal interaction remains in the CLI.
+
+```rust
+use torrent_utils::{CreateOptions, Torrent, WalkMode};
+
+let options = CreateOptions {
+    piece_length: 1 << 20,
+    private: false,
+    n_jobs: 4,
+    walk_mode: WalkMode::Alphabetical,
+    source: None,
+};
+
+let mut torrent = Torrent::new(None, None, None, None, None, Some("UTF-8".into()));
+torrent.create_torrent("path/to/data", &options, None)?;
+torrent.write_to_file("data.torrent", false)?;
+# Ok::<(), torrent_utils::TrError>(())
+```
+
+Pass an implementation of `ProgressReporter` instead of `None` when an application wants progress
+updates. Verification returns a `VerificationReport`; rendering that report is the caller's
+responsibility. Library-only consumers can disable CLI dependencies with
+`default-features = false`.
+
 ## Installation
 
 ### From Source
@@ -109,6 +136,7 @@ TorrentUtilsR supports configuration via a TOML file. By default, it looks for `
 ```toml
 # config.toml
 wait_exit = true
+confirm_overwrite = false
 n_jobs = 4
 walk_mode = 0
 private = false
@@ -127,6 +155,7 @@ tracker_list = [
 ### Configuration Options
 
 - **`wait_exit`**: Boolean, wait for Enter key before exiting
+- **`confirm_overwrite`**: Boolean, ask before overwriting an existing torrent file (default: false). Enter `y` or `yes` to overwrite; any other response cancels creation. When disabled, an existing output file causes an error before torrent creation starts. `--force` bypasses the check
 - **`n_jobs`**: Integer, number of threads to use for verify mode (default: 1)
 - **`walk_mode`**: Integer (0-4), default file walking mode for directories
 - **`private`**: Boolean, creates private torrents by default

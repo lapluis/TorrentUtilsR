@@ -1,4 +1,5 @@
 wait_exit = true
+confirm_overwrite = false
 n_jobs = 4
 walk_mode = 0
 private = false
