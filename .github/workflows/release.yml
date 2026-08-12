@@ -71,7 +71,11 @@ jobs:
           set -euo pipefail
 
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG"
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --draft \
+              --title "$RELEASE_TAG" \
+              --notes-from-tag
           fi
 
           gh release upload "$RELEASE_TAG" dist/* --clobber
