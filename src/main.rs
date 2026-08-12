@@ -201,6 +201,8 @@ fn print_verification_report(report: &VerificationReport) {
         failed_file_count,
     );
 
+    println!();
+
     if report.is_ok() {
         outputln!(
             OutputStream::Stdout,
@@ -208,7 +210,6 @@ fn print_verification_report(report: &VerificationReport) {
             "✓ All files are OK."
         );
     } else {
-        println!();
         outputln!(
             OutputStream::Stdout,
             OutputStyle::Warning,

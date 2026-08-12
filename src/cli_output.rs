@@ -160,7 +160,11 @@ fn verification_line(
         format!("{failed:8} failed")
     };
     let colored_status = if color {
-        let status_color = if failed == 0 { COLOR_SUCCESS } else { COLOR_ERROR };
+        let status_color = if failed == 0 {
+            COLOR_SUCCESS
+        } else {
+            COLOR_ERROR
+        };
         format!("{status_color}{status}{COLOR_RESET}")
     } else {
         status
@@ -198,7 +202,11 @@ fn colorize_torrent_info(text: &str, color: bool) -> String {
                 return line.to_string();
             }
             match line.find(':') {
-                Some(index) => format!("{COLOR_LABEL}{}{COLOR_RESET}{}", &line[..=index], &line[index + 1..]),
+                Some(index) => format!(
+                    "{COLOR_LABEL}{}{COLOR_RESET}{}",
+                    &line[..=index],
+                    &line[index + 1..]
+                ),
                 None => line.to_string(),
             }
         })

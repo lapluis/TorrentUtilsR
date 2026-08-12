@@ -136,7 +136,17 @@ fn single_file_create_info_tree_and_verify_lifecycle() {
         String::from("-q"),
     ]);
     assert!(verify.status.success(), "{}", text(&verify.stderr));
-    assert!(text(&verify.stdout).contains("All files are OK."));
+    assert_eq!(
+        text(&verify.stdout),
+        concat!(
+            "Verification Result:\n",
+            "Pieces:        2 total =        2 passed +        0 failed\n",
+            "Files:         1 total =        1 passed +        0 failed\n",
+            "\n",
+            "✓ All files are OK.\n",
+        )
+    );
+    assert!(verify.stderr.is_empty());
 
     fs::write(&payload, vec![0x33; 20_000]).expect("corrupt payload");
     let verify = run(&[
@@ -147,7 +157,18 @@ fn single_file_create_info_tree_and_verify_lifecycle() {
         String::from("-q"),
     ]);
     assert!(verify.status.success(), "{}", text(&verify.stderr));
-    assert!(text(&verify.stdout).contains("Some files failed verification:"));
+    assert_eq!(
+        text(&verify.stdout),
+        concat!(
+            "Verification Result:\n",
+            "Pieces:        2 total =        0 passed +        2 failed\n",
+            "Files:         1 total =        0 passed +        1 failed\n",
+            "\n",
+            "⚠ Some files failed verification:\n",
+            "- payload.bin (20000 [19.53 KiB])\n",
+        )
+    );
+    assert!(verify.stderr.is_empty());
 }
 
 #[test]
@@ -313,7 +334,17 @@ fn empty_file_torrent_can_be_read_and_verified() {
         String::from("-q"),
     ]);
     assert!(verify.status.success(), "{}", text(&verify.stderr));
-    assert!(text(&verify.stdout).contains("All files are OK."));
+    assert_eq!(
+        text(&verify.stdout),
+        concat!(
+            "Verification Result:\n",
+            "Pieces:        0 total =        0 passed +        0 failed\n",
+            "Files:         1 total =        1 passed +        0 failed\n",
+            "\n",
+            "✓ All files are OK.\n",
+        )
+    );
+    assert!(verify.stderr.is_empty());
 }
 
 #[test]
