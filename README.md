@@ -9,57 +9,6 @@ A fast and reliable command-line utility for creating, reading, and verifying Bi
 - **Verify torrents** against existing files with detailed reporting
 - **Configurable** with TOML configuration file support
 
-## Library API
-
-The project also exposes a `torrent_utils` library target. The library handles torrent creation,
-parsing, serialization, and verification, while terminal interaction remains in the CLI.
-
-```rust
-use torrent_utils::{CreateOptions, Torrent, WalkMode};
-
-let options = CreateOptions {
-    piece_length: 1 << 20,
-    private: false,
-    n_jobs: 4,
-    walk_mode: WalkMode::Alphabetical,
-    source: None,
-};
-
-let mut torrent = Torrent::new(None, None, None, None, None, Some("UTF-8".into()));
-torrent.create_torrent("path/to/data", &options, None)?;
-torrent.write_to_file("data.torrent", false)?;
-# Ok::<(), torrent_utils::TrError>(())
-```
-
-Pass an implementation of `ProgressReporter` instead of `None` when an application wants progress
-updates. Verification returns a `VerificationReport`; rendering that report is the caller's
-responsibility. Library-only consumers can disable CLI dependencies with
-`default-features = false`.
-
-## Testing
-
-The test suite contains two complementary layers:
-
-- `tests/library_api.rs` tests the reusable library API, including creation, serialization,
-  parsing, progress reporting, single-file and multi-file verification, malformed input, empty
-  files, overwrite behavior, and deterministic formatting.
-- `tests/cli_compat.rs` is a black-box compatibility suite covering CLI help and version output,
-  configuration, metadata, file trees, create/info/verify workflows, overwrite handling, invalid
-  arguments, empty files, and malformed piece data.
-
-Run the same checks used by CI with:
-
-```bash
-cargo fmt --all -- --check
-cargo test --locked --all-targets
-cargo test --locked --no-default-features --lib --test library_api
-cargo clippy --locked --all-targets --all-features -- -D warnings
-```
-
-The CLI compatibility suite normally uses the binary built by Cargo. To test another build or
-branch, set `TORRENTUTILSR_TEST_BIN` to that executable before running
-`cargo test --test cli_compat`.
-
 ## Installation
 
 ### From Source
@@ -241,6 +190,57 @@ TorrentUtilsR ubuntu-22.04.torrent ~/Downloads/ubuntu-22.04/
 # Files:        15 total =       15 passed +        0 failed
 # All files are OK.
 ```
+
+## Testing
+
+The test suite contains two complementary layers:
+
+- `tests/library_api.rs` tests the reusable library API, including creation, serialization,
+  parsing, progress reporting, single-file and multi-file verification, malformed input, empty
+  files, overwrite behavior, and deterministic formatting.
+- `tests/cli_compat.rs` is a black-box compatibility suite covering CLI help and version output,
+  configuration, metadata, file trees, create/info/verify workflows, overwrite handling, invalid
+  arguments, empty files, and malformed piece data.
+
+Run the same checks used by CI with:
+
+```bash
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo test --locked --no-default-features --lib --test library_api
+cargo clippy --locked --all-targets --all-features -- -D warnings
+```
+
+The CLI compatibility suite normally uses the binary built by Cargo. To test another build or
+branch, set `TORRENTUTILSR_TEST_BIN` to that executable before running
+`cargo test --test cli_compat`.
+
+## Library API
+
+The project also exposes a `torrent_utils` library target. The library handles torrent creation,
+parsing, serialization, and verification, while terminal interaction remains in the CLI.
+
+```rust
+use torrent_utils::{CreateOptions, Torrent, WalkMode};
+
+let options = CreateOptions {
+    piece_length: 1 << 20,
+    private: false,
+    n_jobs: 4,
+    walk_mode: WalkMode::Alphabetical,
+    source: None,
+};
+
+let mut torrent = Torrent::new(None, None, None, None, None, Some("UTF-8".into()));
+torrent.create_torrent("path/to/data", &options, None)?;
+torrent.write_to_file("data.torrent", false)?;
+# Ok::<(), torrent_utils::TrError>(())
+```
+
+Pass an implementation of `ProgressReporter` instead of `None` when an application wants progress
+updates. Verification returns a `VerificationReport`; rendering that report is the caller's
+responsibility. Library-only consumers can disable CLI dependencies with
+`default-features = false`.
 
 ## Thanks to
 
