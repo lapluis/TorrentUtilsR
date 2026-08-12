@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::cmp;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{File, metadata};
@@ -552,8 +551,42 @@ fn calc_piece_file_info(tr_files: &[TrFile], piece_length: usize) -> Vec<Vec<Fil
     piece_file_info
 }
 
-thread_local! {
-    static FIXED_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+struct SequentialFileReader {
+    file_index: Option<usize>,
+    file: Option<File>,
+    next_offset: u64,
+}
+
+impl SequentialFileReader {
+    const fn new() -> Self {
+        Self {
+            file_index: None,
+            file: None,
+            next_offset: 0,
+        }
+    }
+
+    fn read_exact_at(
+        &mut self,
+        file_index: usize,
+        path: &Path,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> TrResult<()> {
+        if self.file_index != Some(file_index) {
+            self.file = Some(File::open(path)?);
+            self.file_index = Some(file_index);
+            self.next_offset = 0;
+        }
+
+        let file = self.file.as_mut().expect("file was opened above");
+        if self.next_offset != offset {
+            file.seek(SeekFrom::Start(offset))?;
+        }
+        file.read_exact(buf)?;
+        self.next_offset = offset + buf.len() as u64;
+        Ok(())
+    }
 }
 
 fn hash_piece_file(
@@ -564,10 +597,23 @@ fn hash_piece_file(
     progress: Option<&dyn ProgressReporter>,
     n_jobs: usize,
 ) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
+    if piece_file_info.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let f_path_list: Vec<_> = tr_files
         .iter()
         .map(|tr_file| tr_file.join_full_path(base_path))
         .collect();
+
+    // More chunks than workers retain Rayon's load balancing while each chunk still
+    // processes enough adjacent pieces to reuse its current file handle efficiently.
+    const CHUNKS_PER_WORKER: usize = 4;
+    let chunk_count = n_jobs
+        .saturating_mul(CHUNKS_PER_WORKER)
+        .min(piece_file_info.len())
+        .max(1);
+    let chunk_size = piece_file_info.len().div_ceil(chunk_count);
 
     let results: Result<Vec<[u8; SHA1_HASH_SIZE]>, TrError> = {
         let pool = ThreadPoolBuilder::new()
@@ -577,39 +623,40 @@ fn hash_piece_file(
 
         pool.install(|| {
             piece_file_info
-                .par_iter()
-                .map(|piece| -> TrResult<[u8; SHA1_HASH_SIZE]> {
-                    let mut hasher = Sha1::new();
+                .par_chunks(chunk_size)
+                .map(|piece_chunk| -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
+                    let mut reader = SequentialFileReader::new();
+                    let mut buf = vec![0; piece_length];
+                    let mut hashes = Vec::with_capacity(piece_chunk.len());
 
-                    FIXED_BUFFER.with(|buf_cell| -> TrResult<()> {
-                        let mut buf = buf_cell.borrow_mut();
-                        if buf.len() < piece_length {
-                            buf.resize(piece_length, 0);
-                        }
-
+                    for piece in piece_chunk {
+                        let mut hasher = Sha1::new();
                         for file_hash_info in piece {
                             let f_path = &f_path_list[file_hash_info.file_index];
-                            let mut f = File::open(f_path)?;
-                            f.seek(SeekFrom::Start(file_hash_info.file_offset as u64))?;
-
                             let buf_slice = &mut buf[..file_hash_info.length];
-                            f.read_exact(buf_slice)?;
+                            reader.read_exact_at(
+                                file_hash_info.file_index,
+                                f_path,
+                                file_hash_info.file_offset as u64,
+                                buf_slice,
+                            )?;
                             hasher.update(buf_slice);
                         }
-                        Ok(())
-                    })?;
 
-                    let calc_hash = hasher.finalize();
-                    let mut hash_arr = [0u8; SHA1_HASH_SIZE];
-                    hash_arr.copy_from_slice(&calc_hash);
+                        let calc_hash = hasher.finalize();
+                        let mut hash = [0u8; SHA1_HASH_SIZE];
+                        hash.copy_from_slice(&calc_hash);
+                        hashes.push(hash);
 
-                    if let Some(progress) = progress {
-                        progress.advance(1);
+                        if let Some(progress) = progress {
+                            progress.advance(1);
+                        }
                     }
 
-                    Ok(hash_arr)
+                    Ok(hashes)
                 })
-                .collect()
+                .collect::<TrResult<Vec<_>>>()
+                .map(|chunks| chunks.into_iter().flatten().collect())
         })
     };
 

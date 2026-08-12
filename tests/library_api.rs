@@ -157,6 +157,40 @@ fn verifies_multi_file_hash_and_metadata_failures() {
     assert!(report.failed_files[0].missing_or_size_mismatch);
 }
 
+#[test]
+fn chunked_hashing_preserves_cross_file_piece_hashes() {
+    let test_dir = TestDir::new("cross_file_pieces");
+    let directory = test_dir.path().join("payload");
+    let single_file = test_dir.path().join("payload.bin");
+    let payload: Vec<u8> = (0..41).collect();
+
+    fs::create_dir(&directory).expect("create payload directory");
+    fs::write(directory.join("a.bin"), &payload[..13]).expect("write first file");
+    fs::write(directory.join("b.bin"), &payload[13..]).expect("write second file");
+    fs::write(&single_file, &payload).expect("write equivalent single file");
+
+    let options = create_options(4);
+    let mut multi_file_torrent = empty_torrent();
+    multi_file_torrent
+        .create_torrent(&directory, &options, None)
+        .expect("create multi-file torrent");
+    let mut single_file_torrent = empty_torrent();
+    single_file_torrent
+        .create_torrent(&single_file, &options, None)
+        .expect("create single-file torrent");
+
+    assert_eq!(
+        multi_file_torrent
+            .get_info()
+            .expect("multi-file torrent has info")
+            .pieces,
+        single_file_torrent
+            .get_info()
+            .expect("single-file torrent has info")
+            .pieces
+    );
+}
+
 #[derive(Default)]
 struct RecordingProgress {
     total: AtomicUsize,
