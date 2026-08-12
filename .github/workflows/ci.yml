@@ -1,8 +1,9 @@
-name: CI Build
+name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
@@ -12,6 +13,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  quality:
+    name: Format, test, and lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run tests
+        run: cargo test --locked --all-targets
+
+      - name: Test library without CLI dependencies
+        run: cargo test --locked --no-default-features --lib --test library_api
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
   check-release-tag:
     name: Check for release tag
     runs-on: ubuntu-latest
@@ -42,7 +70,7 @@ jobs:
           fi
 
   build:
-    needs: check-release-tag
+    needs: [quality, check-release-tag]
     if: needs.check-release-tag.outputs.should_build == 'true'
     uses: ./.github/workflows/_build.yml
     with:

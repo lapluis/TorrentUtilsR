@@ -36,6 +36,30 @@ updates. Verification returns a `VerificationReport`; rendering that report is t
 responsibility. Library-only consumers can disable CLI dependencies with
 `default-features = false`.
 
+## Testing
+
+The test suite contains two complementary layers:
+
+- `tests/library_api.rs` tests the reusable library API, including creation, serialization,
+  parsing, progress reporting, single-file and multi-file verification, malformed input, empty
+  files, overwrite behavior, and deterministic formatting.
+- `tests/cli_compat.rs` is a black-box compatibility suite covering CLI help and version output,
+  configuration, metadata, file trees, create/info/verify workflows, overwrite handling, invalid
+  arguments, empty files, and malformed piece data.
+
+Run the same checks used by CI with:
+
+```bash
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo test --locked --no-default-features --lib --test library_api
+cargo clippy --locked --all-targets --all-features -- -D warnings
+```
+
+The CLI compatibility suite normally uses the binary built by Cargo. To test another build or
+branch, set `TORRENTUTILSR_TEST_BIN` to that executable before running
+`cargo test --test cli_compat`.
+
 ## Installation
 
 ### From Source
