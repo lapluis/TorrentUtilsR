@@ -289,7 +289,11 @@ fn overwrite_requires_force() {
     fs::write(&payload, b"second payload").expect("change payload");
     let refused = run(&base_args);
     assert_eq!(refused.status.code(), Some(1));
-    assert!(text(&refused.stderr).contains("File already exists"));
+    let stderr = text(&refused.stderr);
+    assert!(
+        stderr.contains("File already exists, use -f to overwrite"),
+        "{stderr}"
+    );
     assert_eq!(
         fs::read(&torrent).expect("read unchanged torrent"),
         original

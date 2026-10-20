@@ -291,7 +291,11 @@ fn file_writes_respect_overwrite_policy() {
     let error = torrent
         .write_to_file(&torrent_path, false)
         .expect_err("second write is rejected");
+    let message = error.to_string();
     assert!(matches!(error, TrError::IO(error) if error.kind() == ErrorKind::AlreadyExists));
+    // Overwrite guidance such as "-f" belongs to the CLI, not the library.
+    assert!(message.contains("output file already exists"), "{message}");
+    assert!(!message.contains("-f"), "{message}");
     torrent
         .write_to_file(&torrent_path, true)
         .expect("forced write succeeds");
