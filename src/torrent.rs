@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{File, read};
 use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
@@ -129,14 +130,8 @@ impl Torrent {
             _ => None,
         };
 
-        let length = match info_dict.get("length") {
-            Some(Value::Int(i)) => Some(*i),
-            _ => None,
-        };
-        let name = match info_dict.get("name") {
-            Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-            _ => None,
-        };
+        let length = optional_int(info_dict, "length");
+        let name = optional_string(info_dict, "name")?;
         let piece_length = match info_dict.get("piece length") {
             Some(Value::Int(i)) => *i,
             _ => {
@@ -149,14 +144,8 @@ impl Torrent {
             Some(Value::Bytes(b)) => b.to_vec(),
             _ => return Err(TrError::InvalidTorrent(String::from("pieces missing"))),
         };
-        let private = match info_dict.get("private") {
-            Some(Value::Int(i)) => *i != 0,
-            _ => false,
-        };
-        let source = match info_dict.get("source") {
-            Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-            _ => None,
-        };
+        let private = optional_int(info_dict, "private").is_some_and(|value| value != 0);
+        let source = optional_string(info_dict, "source")?;
         let tr_info = TrInfo::from_parts(
             tr_files,
             length,
@@ -168,10 +157,7 @@ impl Torrent {
         )?;
 
         Ok(Torrent {
-            announce: match tr_dict.get("announce") {
-                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
+            announce: optional_string(&tr_dict, "announce")?,
             announce_list: match tr_dict.get("announce-list") {
                 Some(Value::List(lists)) => {
                     let mut alist: Vec<Vec<String>> = Vec::new();
@@ -204,27 +190,11 @@ impl Torrent {
                 }
                 _ => None,
             },
-            comment: match tr_dict.get("comment") {
-                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
-            created_by: match tr_dict.get("created by") {
-                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
-            creation_date: match tr_dict.get("creation date") {
-                Some(Value::UInt(i)) => Some(*i),
-                Some(Value::Int(i)) => Some(*i as i64),
-                _ => None,
-            },
-            encoding: match tr_dict.get("encoding") {
-                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
-            hash: match tr_dict.get("hash") {
-                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
+            comment: optional_string(&tr_dict, "comment")?,
+            created_by: optional_string(&tr_dict, "created by")?,
+            creation_date: optional_i64(&tr_dict, "creation date"),
+            encoding: optional_string(&tr_dict, "encoding")?,
+            hash: optional_string(&tr_dict, "hash")?,
             info: Some(tr_info),
         })
     }
@@ -308,5 +278,27 @@ impl Torrent {
         }
         bcode.push(b'e');
         Ok(bcode)
+    }
+}
+
+fn optional_string(dict: &HashMap<String, Value<'_>>, key: &str) -> TrResult<Option<String>> {
+    match dict.get(key) {
+        Some(Value::Bytes(bytes)) => Ok(Some(String::from_utf8(bytes.to_vec())?)),
+        _ => Ok(None),
+    }
+}
+
+fn optional_int(dict: &HashMap<String, Value<'_>>, key: &str) -> Option<usize> {
+    match dict.get(key) {
+        Some(Value::Int(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn optional_i64(dict: &HashMap<String, Value<'_>>, key: &str) -> Option<i64> {
+    match dict.get(key) {
+        Some(Value::UInt(value)) => Some(*value),
+        Some(Value::Int(value)) => Some(*value as i64),
+        _ => None,
     }
 }
