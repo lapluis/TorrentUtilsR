@@ -273,16 +273,20 @@ impl FileTree {
         root
     }
 
-    fn fmt_tree(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt_children(&self, f: &mut Formatter<'_>, prefix: &str) -> FmtResult {
         let mut names: Vec<&String> = self.children.keys().collect();
         names.sort_by(|a, b| compare_ignore_case(a, b));
 
         for (idx, name) in names.iter().enumerate() {
             let last = idx == names.len() - 1;
             let child = self.children.get(*name).expect("tree child exists");
-            child.fmt_branch(f, "", last)?;
+            child.fmt_branch(f, prefix, last)?;
         }
         Ok(())
+    }
+
+    fn fmt_tree(&self, f: &mut Formatter<'_>) -> FmtResult {
+        self.fmt_children(f, "")
     }
 
     fn fmt_branch(&self, f: &mut Formatter<'_>, prefix: &str, is_last: bool) -> FmtResult {
@@ -302,16 +306,8 @@ impl FileTree {
             None => writeln!(f, "{prefix}{connector}{}", self.name)?,
         }
 
-        let mut names: Vec<&String> = self.children.keys().collect();
-        names.sort_by(|a, b| compare_ignore_case(a, b));
-
         let new_prefix = format!("{prefix}{child_prefix}");
-        for (idx, name) in names.iter().enumerate() {
-            let last = idx == names.len() - 1;
-            let child = self.children.get(*name).expect("tree child exists");
-            child.fmt_branch(f, &new_prefix, last)?;
-        }
-        Ok(())
+        self.fmt_children(f, &new_prefix)
     }
 }
 
