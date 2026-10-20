@@ -13,7 +13,7 @@ mod cli_output;
 mod render;
 
 use crate::cli_output::{
-    CliProgress, OutputStream, OutputStyle, outputln, print_torrent_info, print_verification_line,
+    CliProgress, OutputStream, OutputStyle, outputln, print_styled_lines, print_verification_line,
 };
 use crate::render::human_size;
 
@@ -263,7 +263,7 @@ fn main() {
                         if args.print_tree {
                             print_file_tree(&torrent);
                         } else {
-                            print_torrent_info(&render::torrent_info(&torrent));
+                            print_styled_lines(&render::torrent_info(&torrent));
                         }
                     }
                     Err(e) => {

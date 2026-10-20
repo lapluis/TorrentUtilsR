@@ -5,6 +5,8 @@ use chrono::{Local, TimeZone};
 use natord::compare_ignore_case;
 use torrent_utils::{Torrent, TrFile};
 
+use crate::cli_output::{StyledLine, StyledSpan};
+
 const MAX_DISPLAYED_ANNOUNCES: usize = 20;
 const MAX_DISPLAYED_FILES: usize = 100;
 
@@ -29,26 +31,23 @@ pub(crate) fn human_size(bytes: usize) -> String {
     format!("{bytes} B")
 }
 
-pub(crate) fn torrent_info(torrent: &Torrent) -> String {
-    let mut output = String::new();
-    write_torrent_info(&mut output, torrent).expect("writing to a String cannot fail");
-    output
-}
-
-fn write_torrent_info(output: &mut impl Write, torrent: &Torrent) -> fmt::Result {
-    writeln!(output, "Torrent Info:")?;
+pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
+    let mut lines: Vec<StyledLine> = vec![vec![StyledSpan::label("Torrent Info:")]];
 
     let Some(info) = torrent.get_info() else {
-        writeln!(output, "  [No torrent info available]")?;
-        return Ok(());
+        lines.push(vec![StyledSpan::plain("  [No torrent info available]")]);
+        return lines;
     };
 
     if let Some(name) = &info.name {
-        writeln!(output, "  Name: {name}")?;
+        lines.push(vec![
+            StyledSpan::label("  Name:"),
+            StyledSpan::plain(format!(" {name}")),
+        ]);
     }
 
     if let Some(announce_list) = torrent.announce_list() {
-        writeln!(output, "  Announce List:")?;
+        lines.push(vec![StyledSpan::label("  Announce List:")]);
         let pad = if announce_list.len() >= 10 { 2 } else { 1 };
         let mut shown = 0;
         let mut truncated = false;
@@ -60,7 +59,10 @@ fn write_torrent_info(output: &mut impl Write, torrent: &Torrent) -> fmt::Result
             };
             for url in tier {
                 if shown < MAX_DISPLAYED_ANNOUNCES {
-                    writeln!(output, "    Tier {tier_str}: {url}")?;
+                    lines.push(vec![
+                        StyledSpan::label(format!("    Tier {tier_str}:")),
+                        StyledSpan::plain(format!(" {url}")),
+                    ]);
                     shown += 1;
                 } else {
                     truncated = true;
@@ -72,82 +74,107 @@ fn write_torrent_info(output: &mut impl Write, torrent: &Torrent) -> fmt::Result
             }
         }
         if truncated {
-            writeln!(
-                output,
+            lines.push(vec![StyledSpan::plain(format!(
                 "    Truncated at {MAX_DISPLAYED_ANNOUNCES} announces..."
-            )?;
+            ))]);
         }
     }
 
     if let Some(comment) = torrent.comment() {
-        writeln!(output, "  Comment: {comment}")?;
+        lines.push(vec![
+            StyledSpan::label("  Comment:"),
+            StyledSpan::plain(format!(" {comment}")),
+        ]);
     }
     if let Some(created_by) = torrent.created_by() {
-        writeln!(output, "  Created by: {created_by}")?;
+        lines.push(vec![
+            StyledSpan::label("  Created by:"),
+            StyledSpan::plain(format!(" {created_by}")),
+        ]);
     }
     if let Some(date) = torrent.creation_date() {
         if let Some(dt) = Local.timestamp_opt(date, 0).single() {
             let dt = dt.format("%Y-%m-%d %H:%M:%S");
-            writeln!(output, "  Creation date: {date} [{dt}]")?;
+            lines.push(vec![
+                StyledSpan::label("  Creation date:"),
+                StyledSpan::plain(format!(" {date} [{dt}]")),
+            ]);
         } else {
-            writeln!(output, "  Creation date: {date}")?;
+            lines.push(vec![
+                StyledSpan::label("  Creation date:"),
+                StyledSpan::plain(format!(" {date}")),
+            ]);
         }
     }
     if let Some(encoding) = torrent.encoding() {
-        writeln!(output, "  Encoding: {encoding}")?;
+        lines.push(vec![
+            StyledSpan::label("  Encoding:"),
+            StyledSpan::plain(format!(" {encoding}")),
+        ]);
     }
     if let Some(hash) = torrent.hash() {
-        writeln!(output, "  Hash: {hash}")?;
+        lines.push(vec![
+            StyledSpan::label("  Hash:"),
+            StyledSpan::plain(format!(" {hash}")),
+        ]);
     }
 
-    writeln!(output, "  Private: {}", info.private)?;
+    lines.push(vec![
+        StyledSpan::label("  Private:"),
+        StyledSpan::plain(format!(" {}", info.private)),
+    ]);
     if let Some(source) = &info.source {
-        writeln!(output, "  Source: {source}")?;
+        lines.push(vec![
+            StyledSpan::label("  Source:"),
+            StyledSpan::plain(format!(" {source}")),
+        ]);
     }
 
-    writeln!(
-        output,
-        "  Piece length: {} [{}]",
-        info.piece_length,
-        human_size(info.piece_length)
-    )?;
+    lines.push(vec![
+        StyledSpan::label("  Piece length:"),
+        StyledSpan::plain(format!(
+            " {} [{}]",
+            info.piece_length,
+            human_size(info.piece_length)
+        )),
+    ]);
 
     let total_length = if let Some(files) = &info.files {
         files.iter().map(|f| f.length).sum()
     } else {
         info.length.unwrap_or_default()
     };
-    writeln!(
-        output,
-        "  Length: {} [{}]",
-        total_length,
-        human_size(total_length)
-    )?;
+    lines.push(vec![
+        StyledSpan::label("  Length:"),
+        StyledSpan::plain(format!(" {} [{}]", total_length, human_size(total_length))),
+    ]);
 
-    writeln!(
-        output,
-        "  Pieces: {}",
-        if info.piece_length > 0 {
-            total_length.div_ceil(info.piece_length)
-        } else {
-            0
-        }
-    )?;
+    let piece_count = if info.piece_length > 0 {
+        total_length.div_ceil(info.piece_length)
+    } else {
+        0
+    };
+    lines.push(vec![
+        StyledSpan::label("  Pieces:"),
+        StyledSpan::plain(format!(" {piece_count}")),
+    ]);
 
     if let Some(files) = &info.files {
-        writeln!(output, "  Files:  {}", files.len())?;
-        writeln!(output, "  RelPath [Length]:")?;
+        lines.push(vec![
+            StyledSpan::label("  Files:"),
+            StyledSpan::plain(format!("  {}", files.len())),
+        ]);
+        lines.push(vec![StyledSpan::label("  RelPath [Length]:")]);
         let mut shown = 0;
         let mut truncated = false;
         for file in files {
             if shown < MAX_DISPLAYED_FILES {
                 let path_str = file.path.join("/");
-                writeln!(
-                    output,
+                lines.push(vec![StyledSpan::plain(format!(
                     "    - {path_str} [{} ({})]",
                     file.length,
                     human_size(file.length)
-                )?;
+                ))]);
                 shown += 1;
             } else {
                 truncated = true;
@@ -155,11 +182,13 @@ fn write_torrent_info(output: &mut impl Write, torrent: &Torrent) -> fmt::Result
             }
         }
         if truncated {
-            writeln!(output, "    Truncated at {MAX_DISPLAYED_FILES} files...")?;
+            lines.push(vec![StyledSpan::plain(format!(
+                "    Truncated at {MAX_DISPLAYED_FILES} files..."
+            ))]);
         }
     }
 
-    Ok(())
+    lines
 }
 
 pub(crate) fn file_tree(torrent: &Torrent) -> String {
@@ -295,6 +324,33 @@ impl Display for FileTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli_output::OutputStyle;
+
+    #[test]
+    fn torrent_info_uses_structured_label_spans() {
+        let encoded = b"d13:announce-listll15:https://exampleee4:infod6:lengthi3e4:name8:test.bin12:piece lengthi16384e6:pieces20:....................ee";
+        let torrent = Torrent::from_bytes(encoded).expect("valid torrent");
+        let lines = torrent_info(&torrent);
+
+        assert_eq!(lines[0][0].text, "Torrent Info:");
+        assert_eq!(lines[0][0].style, OutputStyle::Label);
+
+        let tier = lines
+            .iter()
+            .find(|line| line[0].text == "    Tier 0:")
+            .expect("tier line");
+        assert_eq!(tier[0].style, OutputStyle::Label);
+        assert_eq!(tier[1].text, " https://example");
+        assert_eq!(tier[1].style, OutputStyle::Plain);
+
+        let name = lines
+            .iter()
+            .find(|line| line[0].text == "  Name:")
+            .expect("name line");
+        assert_eq!(name[0].style, OutputStyle::Label);
+        assert_eq!(name[1].text, " test.bin");
+        assert_eq!(name[1].style, OutputStyle::Plain);
+    }
 
     #[test]
     fn file_tree_and_human_sizes_are_deterministic() {
