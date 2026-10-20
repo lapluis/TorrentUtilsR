@@ -7,6 +7,8 @@ use torrent_utils::ProgressReporter;
 
 const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_SUCCESS: &str = "\x1b[92m";
+const COLOR_PROGRESS_GREEN: &str = "\x1b[32m";
+const COLOR_PROGRESS_CYAN: &str = "\x1b[36m";
 pub(crate) const COLOR_LABEL: &str = "\x1b[94m";
 const COLOR_WARNING: &str = "\x1b[93m";
 const COLOR_ERROR: &str = "\x1b[91m";
@@ -235,7 +237,7 @@ impl ProgressReporter for CliProgress {
         let pb = ProgressBar::new(total as u64);
         pb.set_style(
             ProgressStyle::with_template(
-                "{spinner} [{bar:40}] [{pos}/{len}] pieces ({percent}%, eta: {eta})",
+                "{spinner:.green} [{bar:40.cyan/blue}] [{pos}/{len}] pieces ({percent}%, eta: {eta})",
             )
             .expect("the progress bar template is valid")
             .progress_chars("#>-"),
@@ -256,7 +258,7 @@ impl ProgressReporter for CliProgress {
             pb.finish_and_clear();
             if stdout().is_terminal() {
                 println!(
-                    "{COLOR_SUCCESS}✓{COLOR_RESET} [{COLOR_SUCCESS}########################################{COLOR_RESET}] [{pieces_count}/{pieces_count}] pieces (100%, eta: 0s)"
+                    "{COLOR_PROGRESS_GREEN}✓{COLOR_RESET} [{COLOR_PROGRESS_CYAN}########################################{COLOR_RESET}] [{pieces_count}/{pieces_count}] pieces (100%, eta: 0s)"
                 );
             } else {
                 println!(
