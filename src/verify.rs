@@ -7,7 +7,7 @@ use crate::hash::{SHA1_HASH_SIZE, hash_piece_file, split_hash_pieces};
 use crate::piece::calc_piece_file_info;
 use crate::progress::{ProgressGuard, ProgressReporter};
 use crate::tr_file::TrFile;
-use crate::tr_info::TrInfo;
+use crate::tr_info::{TrInfo, total_file_length, validate_piece_layout};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerificationOptions {
@@ -63,19 +63,9 @@ impl TrInfo {
         options: &VerificationOptions,
         progress: Option<&dyn ProgressReporter>,
     ) -> TrResult<VerificationReport> {
-        if self.piece_length() == 0 {
-            return Err(TrError::InvalidTorrent(String::from(
-                "piece length must be greater than zero",
-            )));
-        }
         if options.n_jobs == 0 {
             return Err(TrError::InvalidConfig(String::from(
                 "number of jobs must be greater than zero",
-            )));
-        }
-        if !self.pieces().len().is_multiple_of(SHA1_HASH_SIZE) {
-            return Err(TrError::InvalidTorrent(String::from(
-                "pieces length is not a multiple of the SHA-1 hash size",
             )));
         }
 
@@ -92,18 +82,9 @@ impl TrInfo {
             }
         };
 
+        let total_length = total_file_length(tr_files)?;
+        validate_piece_layout(self.piece_length(), self.pieces(), total_length)?;
         let piece_slices = split_hash_pieces(self.pieces());
-        let expected_piece_count = tr_files
-            .iter()
-            .try_fold(0usize, |total, file| total.checked_add(file.length()))
-            .ok_or_else(|| TrError::InvalidTorrent(String::from("total file size overflow")))?
-            .div_ceil(self.piece_length());
-        if piece_slices.len() != expected_piece_count {
-            return Err(TrError::InvalidTorrent(format!(
-                "piece count mismatch: expected {expected_piece_count}, found {}",
-                piece_slices.len()
-            )));
-        }
 
         let failed_info = verify_tr_files(
             &piece_slices,

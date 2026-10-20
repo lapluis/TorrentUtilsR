@@ -293,6 +293,22 @@ fn rejects_invalid_options_and_inconsistent_piece_data() {
     .expect_err("files and length are mutually exclusive");
     assert!(matches!(error, TrError::InvalidTorrent(_)));
 
+    let error = TrInfo::from_parts(
+        Some(Vec::new()),
+        None,
+        Some(String::from("payload")),
+        1,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("files list must not be empty");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+    assert!(
+        error.to_string().contains("files list must not be empty"),
+        "{error}"
+    );
+
     let error = TrInfo::from_parts(None, Some(0), None, 1, Vec::new(), false, None)
         .expect_err("name must be present");
     assert!(matches!(error, TrError::MissingField(_)));
