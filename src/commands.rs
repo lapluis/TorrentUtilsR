@@ -1,5 +1,5 @@
 use std::io::{Write, stdin, stdout};
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::Path;
 
 use chrono::Local;
 use torrent_utils::{
@@ -35,6 +35,16 @@ impl CliError {
     pub(crate) fn report(&self) {
         outputln!(OutputStream::Stderr, self.style, "{}", self.message);
     }
+}
+
+fn with_progress<T>(quiet: bool, operation: impl FnOnce(Option<&dyn ProgressReporter>) -> T) -> T {
+    let progress = (!quiet).then(CliProgress::new);
+    let reporter = progress
+        .as_ref()
+        .map(|progress| progress as &dyn ProgressReporter);
+    let result = operation(reporter);
+    drop(progress);
+    result
 }
 
 pub(crate) fn run(args: &Args, config: &Config) -> Result<(), CliError> {
@@ -117,7 +127,10 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
                 return Err(CliError::error("Error: Output path must end with .torrent"));
             }
             let path_obj = Path::new(path);
-            if path_obj.is_absolute() || path.contains(MAIN_SEPARATOR) {
+            let has_directory = path_obj
+                .parent()
+                .is_some_and(|parent| !parent.as_os_str().is_empty());
+            if path_obj.is_absolute() || has_directory {
                 path.to_string()
             } else {
                 let target_path = Path::new(input);
@@ -178,15 +191,10 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
         Some(String::from("UTF-8")),
     );
 
-    let progress = (!args.quiet).then(CliProgress::new);
-    let create_result = {
-        let reporter = progress
-            .as_ref()
-            .map(|progress| progress as &dyn ProgressReporter);
+    with_progress(args.quiet, |reporter| {
         torrent.create_torrent(input, &tr_config, reporter)
-    };
-    drop(progress);
-    create_result.map_err(|e| CliError::error(format!("Error creating torrent: {e}")))?;
+    })
+    .map_err(|e| CliError::error(format!("Error creating torrent: {e}")))?;
 
     torrent
         .write_to_file(torrent_path, force_overwrite)
@@ -235,19 +243,13 @@ fn run_verify(inputs: &[String], args: &Args, config: &Config) -> Result<(), Cli
         )));
     }
 
-    let progress = (!args.quiet).then(CliProgress::new);
     let verify_options = VerificationOptions {
         n_jobs: config.n_jobs,
     };
-    let verify_result = {
-        let reporter = progress
-            .as_ref()
-            .map(|progress| progress as &dyn ProgressReporter);
+    let report = with_progress(args.quiet, |reporter| {
         tr_info.verify(target_path, &verify_options, reporter)
-    };
-    drop(progress);
-    let report =
-        verify_result.map_err(|e| CliError::error(format!("Error during verification: {e}")))?;
+    })
+    .map_err(|e| CliError::error(format!("Error during verification: {e}")))?;
 
     print_verification_report(&report);
     Ok(())

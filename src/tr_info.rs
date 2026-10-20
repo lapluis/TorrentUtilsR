@@ -46,6 +46,40 @@ fn is_safe_path_segment(segment: &str) -> bool {
     true
 }
 
+pub(crate) fn total_file_length(files: &[TrFile]) -> TrResult<usize> {
+    files
+        .iter()
+        .try_fold(0usize, |total, file| total.checked_add(file.length()))
+        .ok_or_else(|| TrError::InvalidTorrent(String::from("total file size overflow")))
+}
+
+pub(crate) fn validate_piece_layout(
+    piece_length: usize,
+    pieces: &[u8],
+    total_length: usize,
+) -> TrResult<()> {
+    if piece_length == 0 {
+        return Err(TrError::InvalidTorrent(String::from(
+            "piece length must be greater than zero",
+        )));
+    }
+    if !pieces.len().is_multiple_of(SHA1_HASH_SIZE) {
+        return Err(TrError::InvalidTorrent(String::from(
+            "pieces length is not a multiple of the SHA-1 hash size",
+        )));
+    }
+
+    let expected_piece_count = total_length.div_ceil(piece_length);
+    let found_piece_count = pieces.len() / SHA1_HASH_SIZE;
+    if found_piece_count != expected_piece_count {
+        return Err(TrError::InvalidTorrent(format!(
+            "piece count mismatch: expected {expected_piece_count}, found {found_piece_count}"
+        )));
+    }
+
+    Ok(())
+}
+
 impl TrInfo {
     pub fn new(
         target_path: impl AsRef<Path>,
@@ -108,12 +142,6 @@ impl TrInfo {
         private: bool,
         source: Option<String>,
     ) -> TrResult<Self> {
-        if piece_length == 0 {
-            return Err(TrError::InvalidTorrent(String::from(
-                "piece length must be greater than zero",
-            )));
-        }
-
         let name = name.ok_or(TrError::MissingField("name"))?;
         if !is_safe_path_segment(&name) {
             return Err(TrError::InvalidTorrent(format!(
@@ -128,6 +156,11 @@ impl TrInfo {
         }
 
         if let Some(files) = &files {
+            if files.is_empty() {
+                return Err(TrError::InvalidTorrent(String::from(
+                    "torrent files list must not be empty",
+                )));
+            }
             for file in files {
                 let path = file.path();
                 if path.is_empty() || !path.iter().all(|segment| is_safe_path_segment(segment)) {
@@ -139,28 +172,11 @@ impl TrInfo {
             }
         }
 
-        if !pieces.len().is_multiple_of(SHA1_HASH_SIZE) {
-            return Err(TrError::InvalidTorrent(String::from(
-                "pieces length is not a multiple of the SHA-1 hash size",
-            )));
-        }
-
-        let total_length = if let Some(files) = &files {
-            files
-                .iter()
-                .try_fold(0usize, |total, file| total.checked_add(file.length()))
-                .ok_or_else(|| TrError::InvalidTorrent(String::from("total file size overflow")))?
-        } else {
-            length.unwrap_or_default()
+        let total_length = match &files {
+            Some(files) => total_file_length(files)?,
+            None => length.unwrap_or_default(),
         };
-
-        let expected_piece_count = total_length.div_ceil(piece_length);
-        let found_piece_count = pieces.len() / SHA1_HASH_SIZE;
-        if found_piece_count != expected_piece_count {
-            return Err(TrError::InvalidTorrent(format!(
-                "piece count mismatch: expected {expected_piece_count}, found {found_piece_count}"
-            )));
-        }
+        validate_piece_layout(piece_length, &pieces, total_length)?;
 
         Ok(Self {
             files,

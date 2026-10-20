@@ -1,42 +1,13 @@
 #![cfg(feature = "cli")]
 
+mod common;
+
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-struct TestDir(PathBuf);
-
-impl TestDir {
-    fn new(name: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "torrent_utils_cli_{name}_{}_{}",
-            std::process::id(),
-            unique
-        ));
-        fs::create_dir(&path).expect("create test directory");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn missing_config(&self) -> String {
-        self.0.join("missing-config.toml").display().to_string()
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use common::TestDir;
 
 fn binary_path() -> OsString {
     std::env::var_os("TORRENTUTILSR_TEST_BIN")
@@ -55,6 +26,14 @@ fn run_with_env(args: &[String], env: &[(&str, &str)]) -> Output {
         command.env(key, value);
     }
     command.output().expect("run TorrentUtilsR")
+}
+
+fn run_in_dir(args: &[String], cwd: &Path) -> Output {
+    Command::new(binary_path())
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("run TorrentUtilsR")
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -203,6 +182,34 @@ fn piped_output_does_not_emit_terminal_progress() {
     let stdout = text(&create.stdout);
     assert!(stdout.contains("Processed 2 pieces in "), "{stdout}");
     assert!(!stdout.contains('\x1b'), "{stdout}");
+}
+
+#[test]
+fn relative_output_with_forward_slashes_uses_working_directory() {
+    let test_dir = TestDir::new("relative_output");
+    let data_dir = test_dir.path().join("data");
+    let out_dir = test_dir.path().join("out");
+    fs::create_dir(&data_dir).expect("create data directory");
+    fs::create_dir(&out_dir).expect("create output directory");
+    fs::write(data_dir.join("payload.bin"), b"payload").expect("write payload");
+
+    let create = run_in_dir(
+        &[
+            String::from("data/payload.bin"),
+            String::from("-g"),
+            test_dir.missing_config(),
+            String::from("-o"),
+            String::from("out/payload.torrent"),
+            String::from("-l"),
+            String::from("14"),
+            String::from("-d"),
+            String::from("-q"),
+        ],
+        test_dir.path(),
+    );
+    assert!(create.status.success(), "{}", text(&create.stderr));
+    assert!(out_dir.join("payload.torrent").is_file());
+    assert!(!data_dir.join("out").exists());
 }
 
 #[test]

@@ -31,6 +31,10 @@ pub(crate) fn human_size(bytes: usize) -> String {
     format!("{bytes} B")
 }
 
+fn labeled_line(label: impl Into<String>, value: impl Into<String>) -> StyledLine {
+    vec![StyledSpan::label(label), StyledSpan::plain(value)]
+}
+
 pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
     let mut lines: Vec<StyledLine> = vec![vec![StyledSpan::label("Torrent Info:")]];
 
@@ -40,10 +44,7 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
     };
 
     if let Some(name) = info.name() {
-        lines.push(vec![
-            StyledSpan::label("  Name:"),
-            StyledSpan::plain(format!(" {name}")),
-        ]);
+        lines.push(labeled_line("  Name:", format!(" {name}")));
     }
 
     if let Some(announce_list) = torrent.announce_list() {
@@ -59,10 +60,10 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
             };
             for url in tier {
                 if shown < MAX_DISPLAYED_ANNOUNCES {
-                    lines.push(vec![
-                        StyledSpan::label(format!("    Tier {tier_str}:")),
-                        StyledSpan::plain(format!(" {url}")),
-                    ]);
+                    lines.push(labeled_line(
+                        format!("    Tier {tier_str}:"),
+                        format!(" {url}"),
+                    ));
                     shown += 1;
                 } else {
                     truncated = true;
@@ -81,89 +82,62 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
     }
 
     if let Some(comment) = torrent.comment() {
-        lines.push(vec![
-            StyledSpan::label("  Comment:"),
-            StyledSpan::plain(format!(" {comment}")),
-        ]);
+        lines.push(labeled_line("  Comment:", format!(" {comment}")));
     }
     if let Some(created_by) = torrent.created_by() {
-        lines.push(vec![
-            StyledSpan::label("  Created by:"),
-            StyledSpan::plain(format!(" {created_by}")),
-        ]);
+        lines.push(labeled_line("  Created by:", format!(" {created_by}")));
     }
     if let Some(date) = torrent.creation_date() {
-        if let Some(dt) = Local.timestamp_opt(date, 0).single() {
-            let dt = dt.format("%Y-%m-%d %H:%M:%S");
-            lines.push(vec![
-                StyledSpan::label("  Creation date:"),
-                StyledSpan::plain(format!(" {date} [{dt}]")),
-            ]);
+        let value = if let Some(dt) = Local.timestamp_opt(date, 0).single() {
+            format!(" {date} [{}]", dt.format("%Y-%m-%d %H:%M:%S"))
         } else {
-            lines.push(vec![
-                StyledSpan::label("  Creation date:"),
-                StyledSpan::plain(format!(" {date}")),
-            ]);
-        }
+            format!(" {date}")
+        };
+        lines.push(labeled_line("  Creation date:", value));
     }
     if let Some(encoding) = torrent.encoding() {
-        lines.push(vec![
-            StyledSpan::label("  Encoding:"),
-            StyledSpan::plain(format!(" {encoding}")),
-        ]);
+        lines.push(labeled_line("  Encoding:", format!(" {encoding}")));
     }
     if let Some(hash) = torrent.hash() {
-        lines.push(vec![
-            StyledSpan::label("  Hash:"),
-            StyledSpan::plain(format!(" {hash}")),
-        ]);
+        lines.push(labeled_line("  Hash:", format!(" {hash}")));
     }
 
-    lines.push(vec![
-        StyledSpan::label("  Private:"),
-        StyledSpan::plain(format!(" {}", info.is_private())),
-    ]);
+    lines.push(labeled_line(
+        "  Private:",
+        format!(" {}", info.is_private()),
+    ));
     if let Some(source) = info.source() {
-        lines.push(vec![
-            StyledSpan::label("  Source:"),
-            StyledSpan::plain(format!(" {source}")),
-        ]);
+        lines.push(labeled_line("  Source:", format!(" {source}")));
     }
 
-    lines.push(vec![
-        StyledSpan::label("  Piece length:"),
-        StyledSpan::plain(format!(
+    lines.push(labeled_line(
+        "  Piece length:",
+        format!(
             " {} [{}]",
             info.piece_length(),
             human_size(info.piece_length())
-        )),
-    ]);
+        ),
+    ));
 
     let total_length = if let Some(files) = info.files() {
         files.iter().map(|f| f.length()).sum()
     } else {
         info.length().unwrap_or_default()
     };
-    lines.push(vec![
-        StyledSpan::label("  Length:"),
-        StyledSpan::plain(format!(" {} [{}]", total_length, human_size(total_length))),
-    ]);
+    lines.push(labeled_line(
+        "  Length:",
+        format!(" {} [{}]", total_length, human_size(total_length)),
+    ));
 
     let piece_count = if info.piece_length() > 0 {
         total_length.div_ceil(info.piece_length())
     } else {
         0
     };
-    lines.push(vec![
-        StyledSpan::label("  Pieces:"),
-        StyledSpan::plain(format!(" {piece_count}")),
-    ]);
+    lines.push(labeled_line("  Pieces:", format!(" {piece_count}")));
 
     if let Some(files) = info.files() {
-        lines.push(vec![
-            StyledSpan::label("  Files:"),
-            StyledSpan::plain(format!("  {}", files.len())),
-        ]);
+        lines.push(labeled_line("  Files:", format!("  {}", files.len())));
         lines.push(vec![StyledSpan::label("  RelPath [Length]:")]);
         let mut shown = 0;
         let mut truncated = false;
@@ -273,14 +247,14 @@ impl FileTree {
         root
     }
 
-    fn fmt_tree(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt_children(&self, f: &mut Formatter<'_>, prefix: &str) -> FmtResult {
         let mut names: Vec<&String> = self.children.keys().collect();
         names.sort_by(|a, b| compare_ignore_case(a, b));
 
         for (idx, name) in names.iter().enumerate() {
             let last = idx == names.len() - 1;
             let child = self.children.get(*name).expect("tree child exists");
-            child.fmt_branch(f, "", last)?;
+            child.fmt_branch(f, prefix, last)?;
         }
         Ok(())
     }
@@ -302,22 +276,14 @@ impl FileTree {
             None => writeln!(f, "{prefix}{connector}{}", self.name)?,
         }
 
-        let mut names: Vec<&String> = self.children.keys().collect();
-        names.sort_by(|a, b| compare_ignore_case(a, b));
-
         let new_prefix = format!("{prefix}{child_prefix}");
-        for (idx, name) in names.iter().enumerate() {
-            let last = idx == names.len() - 1;
-            let child = self.children.get(*name).expect("tree child exists");
-            child.fmt_branch(f, &new_prefix, last)?;
-        }
-        Ok(())
+        self.fmt_children(f, &new_prefix)
     }
 }
 
 impl Display for FileTree {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        self.fmt_tree(f)
+        self.fmt_children(f, "")
     }
 }
 

@@ -1,41 +1,15 @@
+mod common;
+
 use std::fs;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use torrent_utils::{
     BencodeError, CreateOptions, ProgressReporter, Torrent, TrError, TrFile, TrInfo,
     VerificationOptions, WalkMode,
 };
 
-struct TestDir(PathBuf);
-
-impl TestDir {
-    fn new(name: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "torrent_utils_{name}_{}_{}",
-            std::process::id(),
-            unique
-        ));
-        fs::create_dir(&path).expect("create test directory");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use common::TestDir;
 
 fn create_options(piece_length: usize) -> CreateOptions {
     CreateOptions {
@@ -292,6 +266,22 @@ fn rejects_invalid_options_and_inconsistent_piece_data() {
     )
     .expect_err("files and length are mutually exclusive");
     assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(
+        Some(Vec::new()),
+        None,
+        Some(String::from("payload")),
+        1,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("files list must not be empty");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+    assert!(
+        error.to_string().contains("files list must not be empty"),
+        "{error}"
+    );
 
     let error = TrInfo::from_parts(None, Some(0), None, 1, Vec::new(), false, None)
         .expect_err("name must be present");
