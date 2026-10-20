@@ -1,18 +1,12 @@
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Result as fmtResult};
 use std::fs::{File, read};
 use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
-use chrono::{Local, TimeZone};
-
 use crate::bencode::{bencode_int, bencode_string};
 use crate::tr_file::TrFile;
 use crate::tr_info::{CreateOptions, ProgressReporter, TrInfo};
-use crate::utils::{TrError, TrResult, human_size};
-
-const MAX_DISPLAYED_ANNOUNCES: usize = 20;
-const MAX_DISPLAYED_FILES: usize = 100;
+use crate::utils::{TrError, TrResult};
 
 #[derive(Clone, Debug)]
 pub struct Torrent {
@@ -62,11 +56,9 @@ impl Torrent {
     pub fn write_to_file(&self, torrent_path: impl AsRef<Path>, force: bool) -> TrResult<()> {
         let torrent_path = torrent_path.as_ref();
         if !force && torrent_path.exists() {
-            return Err(ioError::new(
-                ErrorKind::AlreadyExists,
-                "File already exists, use -f to overwrite",
-            )
-            .into());
+            return Err(
+                ioError::new(ErrorKind::AlreadyExists, "output file already exists").into(),
+            );
         }
         let mut file = File::create(torrent_path)?;
         file.write_all(&self.to_bytes()?)?;
@@ -319,6 +311,34 @@ impl Torrent {
         self.info.as_ref()
     }
 
+    pub fn announce(&self) -> Option<&str> {
+        self.announce.as_deref()
+    }
+
+    pub fn announce_list(&self) -> Option<&[Vec<String>]> {
+        self.announce_list.as_deref()
+    }
+
+    pub fn comment(&self) -> Option<&str> {
+        self.comment.as_deref()
+    }
+
+    pub fn created_by(&self) -> Option<&str> {
+        self.created_by.as_deref()
+    }
+
+    pub fn creation_date(&self) -> Option<i64> {
+        self.creation_date
+    }
+
+    pub fn encoding(&self) -> Option<&str> {
+        self.encoding.as_deref()
+    }
+
+    pub fn hash(&self) -> Option<&str> {
+        self.hash.as_deref()
+    }
+
     pub fn to_bytes(&self) -> TrResult<Vec<u8>> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');
@@ -366,136 +386,5 @@ impl Torrent {
         }
         bcode.push(b'e');
         Ok(bcode)
-    }
-}
-
-impl Display for Torrent {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmtResult {
-        writeln!(f, "Torrent Info:")?;
-
-        match &self.info {
-            Some(info) => {
-                if let Some(name) = &info.name {
-                    writeln!(f, "  Name: {name}")?;
-                }
-
-                if let Some(announce_list) = &self.announce_list {
-                    writeln!(f, "  Announce List:")?;
-                    let pad = if announce_list.len() >= 10 { 2 } else { 1 };
-                    let mut shown = 0;
-                    let mut truncated = false;
-                    for (tier_id, tier) in announce_list.iter().enumerate() {
-                        let tier_str = if pad == 2 {
-                            format!("{tier_id:02}")
-                        } else {
-                            format!("{tier_id}")
-                        };
-                        for url in tier {
-                            if shown < MAX_DISPLAYED_ANNOUNCES {
-                                writeln!(f, "    Tier {tier_str}: {url}")?;
-                                shown += 1;
-                            } else {
-                                truncated = true;
-                                break;
-                            }
-                        }
-                        if truncated {
-                            break;
-                        }
-                    }
-                    if truncated {
-                        writeln!(f, "    Truncated at {MAX_DISPLAYED_ANNOUNCES} announces...")?;
-                    }
-                }
-
-                if let Some(comment) = &self.comment {
-                    writeln!(f, "  Comment: {comment}")?;
-                }
-                if let Some(created_by) = &self.created_by {
-                    writeln!(f, "  Created by: {created_by}")?;
-                }
-                if let Some(date) = self.creation_date {
-                    let dt = Local
-                        .timestamp_opt(date, 0)
-                        .unwrap()
-                        .format("%Y-%m-%d %H:%M:%S");
-                    writeln!(f, "  Creation date: {date} [{dt}]")?;
-                }
-                if let Some(encoding) = &self.encoding {
-                    writeln!(f, "  Encoding: {encoding}")?;
-                }
-                if let Some(hash) = &self.hash {
-                    writeln!(f, "  Hash: {hash}")?;
-                }
-
-                writeln!(f, "  Private: {}", info.private)?;
-                if let Some(source) = &info.source {
-                    writeln!(f, "  Source: {}", source)?;
-                }
-
-                writeln!(
-                    f,
-                    "  Piece length: {} [{}]",
-                    info.piece_length,
-                    human_size(info.piece_length)
-                )?;
-
-                let total_length = if let Some(files) = &info.files {
-                    files.iter().map(|f| f.length).sum()
-                } else {
-                    info.length.unwrap_or_default()
-                };
-                writeln!(
-                    f,
-                    "  Length: {} [{}]",
-                    total_length,
-                    human_size(total_length)
-                )?;
-
-                writeln!(
-                    f,
-                    "  Pieces: {}",
-                    if info.piece_length > 0 {
-                        total_length.div_ceil(info.piece_length)
-                    } else {
-                        0
-                    }
-                )?;
-
-                if let Some(files) = &info.files {
-                    writeln!(
-                        f,
-                        "  Files:  {}",
-                        info.files.as_ref().map(|f| f.len()).unwrap_or(0)
-                    )?;
-                    writeln!(f, "  RelPath [Length]:")?;
-                    let mut shown = 0;
-                    let mut truncated = false;
-                    for file in files {
-                        if shown < MAX_DISPLAYED_FILES {
-                            let path_str = file.path.join("/");
-                            writeln!(
-                                f,
-                                "    - {path_str} [{} ({})]",
-                                file.length,
-                                human_size(file.length)
-                            )?;
-                            shown += 1;
-                        } else {
-                            truncated = true;
-                            break;
-                        }
-                    }
-                    if truncated {
-                        writeln!(f, "    Truncated at {MAX_DISPLAYED_FILES} files...")?;
-                    }
-                }
-            }
-            None => {
-                writeln!(f, "  [No torrent info available]")?;
-            }
-        }
-
-        Ok(())
     }
 }

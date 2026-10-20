@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use torrent_utils::{
-    CreateOptions, FileTree, ProgressReporter, Torrent, TrError, TrFile, TrInfo,
-    VerificationOptions, WalkMode, human_size,
+    CreateOptions, ProgressReporter, Torrent, TrError, TrInfo, VerificationOptions, WalkMode,
 };
 
 struct TestDir(PathBuf);
@@ -296,25 +295,4 @@ fn file_writes_respect_overwrite_policy() {
     torrent
         .write_to_file(&torrent_path, true)
         .expect("forced write succeeds");
-}
-
-#[test]
-fn file_tree_and_human_sizes_are_deterministic() {
-    let files = vec![
-        TrFile {
-            length: 1024,
-            path: vec![String::from("dir"), String::from("b.bin")],
-        },
-        TrFile {
-            length: 3,
-            path: vec![String::from("a.txt")],
-        },
-    ];
-
-    assert_eq!(human_size(0), "0 B");
-    assert_eq!(human_size(1536), "1.50 KiB");
-    assert_eq!(
-        FileTree::build(&files).to_string(),
-        "├── a.txt (3 [3 B])\n└── dir\n    └── b.bin (1024 [1 KiB])\n"
-    );
 }

@@ -6,15 +6,16 @@ use std::thread;
 use argh::FromArgs;
 use serde::Deserialize;
 use torrent_utils::{
-    CreateOptions, FileTree, ProgressReporter, Torrent, VerificationOptions, VerificationReport,
-    WalkMode, human_size,
+    CreateOptions, ProgressReporter, Torrent, VerificationOptions, VerificationReport, WalkMode,
 };
 
 mod cli_output;
+mod render;
 
 use crate::cli_output::{
     CliProgress, OutputStream, OutputStyle, outputln, print_torrent_info, print_verification_line,
 };
+use crate::render::human_size;
 
 const DEF_PIECE_SIZE: u8 = 24; // 1 << 24 = 16777216 bytes = 16 MiB
 
@@ -166,21 +167,7 @@ fn confirm_overwrite(torrent_path: &str) -> bool {
 }
 
 fn print_file_tree(torrent: &Torrent) {
-    match torrent.get_info() {
-        Some(info) => {
-            if let Some(name) = &info.name {
-                println!("{name}");
-            }
-            if let Some(files) = &info.files {
-                print!("{}", FileTree::build(files));
-            } else if let Some(length) = info.length {
-                println!("  [Single file, {} ({})]", length, human_size(length));
-            } else {
-                println!("  [No files information available]");
-            }
-        }
-        None => println!("[No torrent info available]"),
-    }
+    print!("{}", render::file_tree(torrent));
 }
 
 fn print_verification_report(report: &VerificationReport) {
@@ -276,7 +263,7 @@ fn main() {
                         if args.print_tree {
                             print_file_tree(&torrent);
                         } else {
-                            print_torrent_info(&torrent.to_string());
+                            print_torrent_info(&render::torrent_info(&torrent));
                         }
                     }
                     Err(e) => {

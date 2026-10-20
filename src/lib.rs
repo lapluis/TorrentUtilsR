@@ -7,9 +7,9 @@ mod tr_info;
 mod utils;
 
 pub use torrent::Torrent;
-pub use tr_file::{FileTree, TrFile};
+pub use tr_file::TrFile;
 pub use tr_info::{
     CreateOptions, FailedFile, ProgressReporter, TrConfig, TrInfo, VerificationOptions,
     VerificationReport, WalkMode,
 };
-pub use utils::{TrError, TrResult, human_size};
+pub use utils::{TrError, TrResult};

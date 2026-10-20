@@ -54,24 +54,3 @@ impl From<String> for TrError {
 }
 
 pub type TrResult<T> = Result<T, TrError>;
-
-pub fn human_size(bytes: usize) -> String {
-    const UNITS: &[(usize, &str)] = &[
-        (1024 * 1024 * 1024, "GiB"),
-        (1024 * 1024, "MiB"),
-        (1024, "KiB"),
-    ];
-
-    for &(unit_size, unit_name) in UNITS {
-        if bytes >= unit_size {
-            return if bytes.is_multiple_of(unit_size) {
-                format!("{} {}", bytes / unit_size, unit_name)
-            } else {
-                let value = bytes as f64 / unit_size as f64;
-                format!("{value:.2} {unit_name}")
-            };
-        }
-    }
-
-    format!("{bytes} B")
-}
