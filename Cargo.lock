@@ -6,6 +6,7 @@ version = 4
 name = "TorrentUtilsR"
 version = "0.3.0"
 dependencies = [
+ "anstyle-progress",
  "argh",
  "chrono",
  "hex",
@@ -26,6 +27,12 @@ checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "anstyle-progress"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082ebe8b7607a68881fbcccc7b3a3e784aa58593ed4261df0679a803fdb80853"
 
 [[package]]
 name = "argh"

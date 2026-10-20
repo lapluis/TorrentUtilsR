@@ -2,6 +2,7 @@ use std::fmt::Arguments;
 use std::io::{IsTerminal, Write, stderr, stdout};
 use std::sync::Mutex;
 
+use anstyle_progress::{TermProgress, supports_term_progress};
 use indicatif::{ProgressBar, ProgressStyle};
 use torrent_utils::ProgressReporter;
 
@@ -220,14 +221,34 @@ pub(crate) fn print_torrent_info(text: &str) {
     println!("{}", colorize_torrent_info(text, stdout().is_terminal()));
 }
 
+struct TerminalProgressState {
+    enabled: bool,
+    last_percent: Option<u8>,
+}
+
+fn progress_percent(position: u64, length: u64) -> Option<u8> {
+    (length > 0).then(|| (u128::from(position) * 100 / u128::from(length)).min(100) as u8)
+}
+
+fn write_terminal_progress(progress: TermProgress) {
+    let mut output = stderr().lock();
+    let _ = write!(output, "{progress}");
+    let _ = output.flush();
+}
+
 pub(crate) struct CliProgress {
     bar: Mutex<Option<ProgressBar>>,
+    terminal: Mutex<TerminalProgressState>,
 }
 
 impl CliProgress {
     pub(crate) const fn new() -> Self {
         Self {
             bar: Mutex::new(None),
+            terminal: Mutex::new(TerminalProgressState {
+                enabled: false,
+                last_percent: None,
+            }),
         }
     }
 }
@@ -243,11 +264,42 @@ impl ProgressReporter for CliProgress {
             .progress_chars("#>-"),
         );
         *self.bar.lock().expect("progress lock poisoned") = Some(pb);
+
+        let mut terminal = self
+            .terminal
+            .lock()
+            .expect("terminal progress lock poisoned");
+        if terminal.enabled {
+            write_terminal_progress(TermProgress::remove());
+        }
+        terminal.enabled = total > 0 && supports_term_progress(stderr().is_terminal());
+        terminal.last_percent = None;
+        if terminal.enabled {
+            write_terminal_progress(TermProgress::start().percent(0));
+            terminal.last_percent = Some(0);
+        }
     }
 
     fn advance(&self, delta: usize) {
-        if let Some(pb) = self.bar.lock().expect("progress lock poisoned").as_ref() {
+        let percent = {
+            let bar = self.bar.lock().expect("progress lock poisoned");
+            let Some(pb) = bar.as_ref() else {
+                return;
+            };
             pb.inc(delta as u64);
+            progress_percent(pb.position(), pb.length().unwrap_or_default())
+        };
+        let Some(percent) = percent else {
+            return;
+        };
+
+        let mut terminal = self
+            .terminal
+            .lock()
+            .expect("terminal progress lock poisoned");
+        if terminal.enabled && terminal.last_percent.is_none_or(|last| percent > last) {
+            write_terminal_progress(TermProgress::start().percent(percent));
+            terminal.last_percent = Some(percent);
         }
     }
 
@@ -267,6 +319,37 @@ impl ProgressReporter for CliProgress {
             }
             println!("Processed {pieces_count} pieces in {elapsed:.2?}");
         }
+
+        let mut terminal = self
+            .terminal
+            .lock()
+            .expect("terminal progress lock poisoned");
+        if terminal.enabled {
+            write_terminal_progress(TermProgress::remove());
+            terminal.enabled = false;
+        }
+        terminal.last_percent = None;
+    }
+}
+
+impl Drop for CliProgress {
+    fn drop(&mut self) {
+        let terminal = match self.terminal.get_mut() {
+            Ok(terminal) => terminal,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if terminal.enabled {
+            write_terminal_progress(TermProgress::remove());
+            terminal.enabled = false;
+        }
+
+        let bar = match self.bar.get_mut() {
+            Ok(bar) => bar,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(pb) = bar.take() {
+            pb.finish_and_clear();
+        }
     }
 }
 
@@ -283,6 +366,15 @@ mod tests {
         let failed = verification_line("Pieces:", 2, 1, 1, true);
         assert!(failed.contains("\x1b[91m       1 failed\x1b[0m"));
         assert!(!failed.contains("\x1b[92m"));
+    }
+
+    #[test]
+    fn progress_percent_is_bounded() {
+        assert_eq!(progress_percent(0, 10), Some(0));
+        assert_eq!(progress_percent(5, 10), Some(50));
+        assert_eq!(progress_percent(10, 10), Some(100));
+        assert_eq!(progress_percent(11, 10), Some(100));
+        assert_eq!(progress_percent(0, 0), None);
     }
 
     #[test]

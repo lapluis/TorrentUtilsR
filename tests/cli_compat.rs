@@ -45,10 +45,16 @@ fn binary_path() -> OsString {
 }
 
 fn run(args: &[String]) -> Output {
-    Command::new(binary_path())
-        .args(args)
-        .output()
-        .expect("run TorrentUtilsR")
+    run_with_env(args, &[])
+}
+
+fn run_with_env(args: &[String], env: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(binary_path());
+    command.args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().expect("run TorrentUtilsR")
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -169,6 +175,34 @@ fn single_file_create_info_tree_and_verify_lifecycle() {
         )
     );
     assert!(verify.stderr.is_empty());
+}
+
+#[test]
+fn piped_output_does_not_emit_terminal_progress() {
+    let test_dir = TestDir::new("terminal_progress_pipe");
+    let payload = test_dir.path().join("payload.bin");
+    let torrent = test_dir.path().join("payload.torrent");
+    fs::write(&payload, vec![0x5a; 20_000]).expect("write payload");
+
+    let create = run_with_env(
+        &[
+            path_string(&payload),
+            String::from("-g"),
+            test_dir.missing_config(),
+            String::from("-o"),
+            path_string(&torrent),
+            String::from("-l"),
+            String::from("14"),
+            String::from("-d"),
+        ],
+        &[("WT_SESSION", "test-session")],
+    );
+    assert!(create.status.success(), "{}", text(&create.stderr));
+    assert!(create.stderr.is_empty(), "{}", text(&create.stderr));
+
+    let stdout = text(&create.stdout);
+    assert!(stdout.contains("Processed 2 pieces in "), "{stdout}");
+    assert!(!stdout.contains('\x1b'), "{stdout}");
 }
 
 #[test]

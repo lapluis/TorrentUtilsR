@@ -420,10 +420,14 @@ fn main() {
                 );
 
                 let progress = (!args.quiet).then(CliProgress::new);
-                let progress = progress
-                    .as_ref()
-                    .map(|progress| progress as &dyn ProgressReporter);
-                if let Err(e) = torrent.create_torrent(input, &tr_config, progress) {
+                let create_result = {
+                    let reporter = progress
+                        .as_ref()
+                        .map(|progress| progress as &dyn ProgressReporter);
+                    torrent.create_torrent(input, &tr_config, reporter)
+                };
+                drop(progress);
+                if let Err(e) = create_result {
                     outputln!(error, "Error creating torrent:", " {e}");
                     wait_for_enter(config.wait_exit);
                     exit(1);
@@ -503,13 +507,17 @@ fn main() {
             }
 
             let progress = (!args.quiet).then(CliProgress::new);
-            let progress = progress
-                .as_ref()
-                .map(|progress| progress as &dyn ProgressReporter);
             let verify_options = VerificationOptions {
                 n_jobs: config.n_jobs,
             };
-            match tr_info.verify(&target_path, &verify_options, progress) {
+            let verify_result = {
+                let reporter = progress
+                    .as_ref()
+                    .map(|progress| progress as &dyn ProgressReporter);
+                tr_info.verify(&target_path, &verify_options, reporter)
+            };
+            drop(progress);
+            match verify_result {
                 Ok(report) => print_verification_report(&report),
                 Err(e) => {
                     outputln!(error, "Error during verification:", " {e}");

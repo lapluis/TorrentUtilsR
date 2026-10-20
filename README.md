@@ -7,6 +7,7 @@ A fast and reliable command-line utility for creating, reading, and verifying Bi
 - **Create torrents** from files or directories
 - **Read torrent files** and display comprehensive information
 - **Verify torrents** against existing files with detailed reporting
+- **Terminal progress integration** via OSC 9;4 (Windows Terminal tab/taskbar, ConEmu, WezTerm, Ghostty)
 - **Configurable** with TOML configuration file support
 
 ## Installation
