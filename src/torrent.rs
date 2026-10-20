@@ -3,10 +3,10 @@ use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
 use crate::codec::{Value, bencode_int, bencode_string, decode};
+use crate::error::{TrError, TrResult};
 use crate::progress::ProgressReporter;
 use crate::tr_file::TrFile;
 use crate::tr_info::{CreateOptions, TrInfo};
-use crate::utils::{TrError, TrResult};
 
 #[derive(Clone, Debug)]
 pub struct Torrent {
@@ -304,7 +304,7 @@ impl Torrent {
             bcode.extend(bencode_string("info"));
             bcode.extend(info.bencode());
         } else {
-            return Err(TrError::MissingField(String::from("info")));
+            return Err(TrError::MissingField("info"));
         }
         bcode.push(b'e');
         Ok(bcode)

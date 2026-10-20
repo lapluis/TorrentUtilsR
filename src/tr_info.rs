@@ -3,10 +3,10 @@ use std::path::Path;
 use sha1::{Digest, Sha1};
 
 use crate::codec::{bencode_bytes, bencode_string, bencode_uint};
+use crate::error::{TrError, TrResult};
 use crate::hash::{SHA1_HASH_SIZE, hash_tr_files};
 use crate::progress::ProgressReporter;
 use crate::tr_file::{TrFile, bencode_file_list};
-use crate::utils::{TrError, TrResult};
 use crate::walk::{WalkMode, walk_target};
 
 #[derive(Clone, Debug)]
@@ -114,7 +114,7 @@ impl TrInfo {
             )));
         }
 
-        let name = name.ok_or_else(|| TrError::MissingField(String::from("name")))?;
+        let name = name.ok_or(TrError::MissingField("name"))?;
         if !is_safe_path_segment(&name) {
             return Err(TrError::InvalidTorrent(format!(
                 "invalid torrent name: {name}"
@@ -204,7 +204,7 @@ impl TrInfo {
     pub fn get_name(&self) -> TrResult<String> {
         self.name()
             .map(str::to_owned)
-            .ok_or_else(|| TrError::MissingField(String::from("name")))
+            .ok_or(TrError::MissingField("name"))
     }
 
     pub fn bencode(&self) -> Vec<u8> {

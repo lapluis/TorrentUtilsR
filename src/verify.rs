@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::metadata;
 use std::path::{Path, PathBuf};
 
+use crate::error::{TrError, TrResult};
 use crate::hash::{SHA1_HASH_SIZE, hash_piece_file, split_hash_pieces};
 use crate::piece::calc_piece_file_info;
-use crate::progress::ProgressReporter;
+use crate::progress::{ProgressGuard, ProgressReporter};
 use crate::tr_file::TrFile;
 use crate::tr_info::TrInfo;
-use crate::utils::{TrError, TrResult};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerificationOptions {
@@ -85,8 +85,7 @@ impl TrInfo {
             Some(files) => files,
             None => {
                 single_file = vec![TrFile::new(
-                    self.length()
-                        .ok_or_else(|| TrError::MissingField(String::from("length")))?,
+                    self.length().ok_or(TrError::MissingField("length"))?,
                     Vec::new(),
                 )];
                 &single_file
@@ -165,10 +164,7 @@ fn verify_tr_files(
         pieces: HashSet::new(),
     };
     let pieces_count = piece_slices.len();
-
-    if let Some(progress) = progress {
-        progress.begin(pieces_count);
-    }
+    let mut progress = ProgressGuard::begin(progress, pieces_count);
 
     for (i, piece) in piece_file_info.iter().enumerate() {
         let mut files_ok: bool = true;
@@ -198,9 +194,7 @@ fn verify_tr_files(
             for file_hash_info in piece {
                 failed_info.files.insert(file_hash_info.file_index);
             }
-            if let Some(progress) = progress {
-                progress.advance(1);
-            }
+            progress.advance(1);
             continue;
         }
     }
@@ -221,7 +215,7 @@ fn verify_tr_files(
         &piece_file_info,
         tr_files,
         base_path,
-        progress,
+        &progress,
         n_jobs,
     )?;
     for (i, piece_calc_hash) in calc_piece_slices.iter().enumerate() {
@@ -233,9 +227,7 @@ fn verify_tr_files(
         }
     }
 
-    if let Some(progress) = progress {
-        progress.finish();
-    }
+    progress.finish();
 
     Ok(failed_info)
 }

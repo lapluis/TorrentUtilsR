@@ -5,8 +5,8 @@ use std::path::{MAIN_SEPARATOR, Path};
 use natord::compare_ignore_case;
 use walkdir::WalkDir;
 
+use crate::error::{TrError, TrResult};
 use crate::tr_file::TrFile;
-use crate::utils::{TrError, TrResult};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WalkMode {

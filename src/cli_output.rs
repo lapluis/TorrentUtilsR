@@ -267,6 +267,25 @@ impl CliProgress {
             }),
         }
     }
+
+    fn take_bar(&self) -> Option<ProgressBar> {
+        match self.bar.lock() {
+            Ok(mut bar) => bar.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        }
+    }
+
+    fn clear_terminal(&self) {
+        let mut terminal = match self.terminal.lock() {
+            Ok(terminal) => terminal,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if terminal.enabled {
+            write_terminal_progress(TermProgress::remove());
+            terminal.enabled = false;
+        }
+        terminal.last_percent = None;
+    }
 }
 
 impl ProgressReporter for CliProgress {
@@ -320,7 +339,7 @@ impl ProgressReporter for CliProgress {
     }
 
     fn finish(&self) {
-        if let Some(pb) = self.bar.lock().expect("progress lock poisoned").take() {
+        if let Some(pb) = self.take_bar() {
             let elapsed = pb.elapsed();
             let pieces_count = pb.length().unwrap_or_default();
             pb.finish_and_clear();
@@ -336,15 +355,14 @@ impl ProgressReporter for CliProgress {
             println!("Processed {pieces_count} pieces in {elapsed:.2?}");
         }
 
-        let mut terminal = self
-            .terminal
-            .lock()
-            .expect("terminal progress lock poisoned");
-        if terminal.enabled {
-            write_terminal_progress(TermProgress::remove());
-            terminal.enabled = false;
+        self.clear_terminal();
+    }
+
+    fn abandon(&self) {
+        if let Some(pb) = self.take_bar() {
+            pb.finish_and_clear();
         }
-        terminal.last_percent = None;
+        self.clear_terminal();
     }
 }
 

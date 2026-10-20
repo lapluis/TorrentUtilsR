@@ -5,10 +5,10 @@ use std::path::Path;
 use rayon::{ThreadPoolBuilder, prelude::*};
 use sha1::{Digest, Sha1};
 
+use crate::error::{TrError, TrResult};
 use crate::piece::{FileHashInfo, calc_piece_file_info};
-use crate::progress::ProgressReporter;
+use crate::progress::{ProgressGuard, ProgressReporter};
 use crate::tr_file::TrFile;
-use crate::utils::{TrError, TrResult};
 
 pub(crate) const SHA1_HASH_SIZE: usize = 20;
 
@@ -21,17 +21,14 @@ pub(crate) fn hash_tr_files(
 ) -> TrResult<Vec<u8>> {
     let piece_file_info = calc_piece_file_info(tr_files, chunk_size);
     let pieces_count = piece_file_info.len();
-
-    if let Some(progress) = progress {
-        progress.begin(pieces_count);
-    }
+    let mut progress = ProgressGuard::begin(progress, pieces_count);
 
     let piece_slices = hash_piece_file(
         chunk_size,
         &piece_file_info,
         tr_files,
         base_path,
-        progress,
+        &progress,
         n_jobs,
     )?;
 
@@ -40,9 +37,7 @@ pub(crate) fn hash_tr_files(
         pieces.extend_from_slice(&slice);
     }
 
-    if let Some(progress) = progress {
-        progress.finish();
-    }
+    progress.finish();
 
     Ok(pieces)
 }
@@ -52,7 +47,7 @@ pub(crate) fn hash_piece_file(
     piece_file_info: &[Vec<FileHashInfo>],
     tr_files: &[TrFile],
     base_path: &Path,
-    progress: Option<&dyn ProgressReporter>,
+    progress: &ProgressGuard<'_>,
     n_jobs: usize,
 ) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
     if piece_file_info.is_empty() {
@@ -77,7 +72,7 @@ pub(crate) fn hash_piece_file(
         let pool = ThreadPoolBuilder::new()
             .num_threads(n_jobs)
             .build()
-            .map_err(|e| TrError::ParseError(format!("Failed to create thread pool: {e}")))?;
+            .map_err(|e| TrError::ThreadPool(format!("failed to create: {e}")))?;
 
         pool.install(|| {
             piece_file_info
@@ -106,9 +101,7 @@ pub(crate) fn hash_piece_file(
                         hash.copy_from_slice(&calc_hash);
                         hashes.push(hash);
 
-                        if let Some(progress) = progress {
-                            progress.advance(1);
-                        }
+                        progress.advance(1);
                     }
 
                     Ok(hashes)

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use torrent_utils::{
-    CreateOptions, ProgressReporter, Torrent, TrError, TrFile, TrInfo, VerificationOptions,
-    WalkMode,
+    BencodeError, CreateOptions, ProgressReporter, Torrent, TrError, TrFile, TrInfo,
+    VerificationOptions, WalkMode,
 };
 
 struct TestDir(PathBuf);
@@ -199,6 +199,7 @@ struct RecordingProgress {
     total: AtomicUsize,
     advanced: AtomicUsize,
     finished: AtomicUsize,
+    abandoned: AtomicUsize,
 }
 
 impl ProgressReporter for RecordingProgress {
@@ -212,6 +213,10 @@ impl ProgressReporter for RecordingProgress {
 
     fn finish(&self) {
         self.finished.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn abandon(&self) {
+        self.abandoned.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -230,6 +235,7 @@ fn reports_progress_for_every_piece() {
     assert_eq!(progress.total.load(Ordering::SeqCst), 3);
     assert_eq!(progress.advanced.load(Ordering::SeqCst), 3);
     assert_eq!(progress.finished.load(Ordering::SeqCst), 1);
+    assert_eq!(progress.abandoned.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -332,6 +338,15 @@ fn parser_rejects_malformed_data() {
     ] {
         assert!(Torrent::from_bytes(malformed).is_err());
     }
+}
+
+#[test]
+fn parser_returns_structured_bencode_errors() {
+    let error = Torrent::from_bytes(b"x").expect_err("invalid bencode");
+    assert!(matches!(
+        error,
+        TrError::Bencode(BencodeError::UnexpectedToken(b'x'))
+    ));
 }
 
 #[test]

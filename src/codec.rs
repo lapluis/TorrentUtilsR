@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::utils::{TrError, TrResult};
+use crate::error::{BencodeError, TrResult};
 
 pub(crate) enum Value<'a> {
     Int(usize),
@@ -14,14 +14,12 @@ pub(crate) fn decode(data: &[u8]) -> TrResult<Value<'_>> {
     let mut pos = 0;
     let value = parse(data, &mut pos)?;
     if pos != data.len() {
-        return Err(TrError::InvalidTorrent(String::from(
-            "trailing data after torrent",
-        )));
+        return Err(BencodeError::TrailingData.into());
     }
     Ok(value)
 }
 
-fn parse<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Value<'a>> {
+fn parse<'a>(data: &'a [u8], pos: &mut usize) -> Result<Value<'a>, BencodeError> {
     match data.get(*pos) {
         Some(b'i') => {
             *pos += 1;
@@ -30,16 +28,20 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Value<'a>> {
                 *pos += 1;
             }
             if *pos >= data.len() {
-                return Err("unterminated integer".into());
+                return Err(BencodeError::UnterminatedInteger);
             }
-            let num_str =
-                std::str::from_utf8(&data[start..*pos]).map_err(|_| "invalid utf8 in int")?;
+            let num_str = std::str::from_utf8(&data[start..*pos])
+                .map_err(|_| BencodeError::InvalidUtf8("integer"))?;
             *pos += 1;
             if num_str.starts_with("-") {
-                let val = num_str.parse::<i64>().map_err(|_| "invalid int")?;
+                let val = num_str
+                    .parse::<i64>()
+                    .map_err(|_| BencodeError::InvalidInteger)?;
                 Ok(Value::UInt(val))
             } else {
-                let val = num_str.parse::<usize>().map_err(|_| "invalid int")?;
+                let val = num_str
+                    .parse::<usize>()
+                    .map_err(|_| BencodeError::InvalidInteger)?;
                 Ok(Value::Int(val))
             }
         }
@@ -58,10 +60,8 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Value<'a>> {
             while data.get(*pos) != Some(&b'e') {
                 let key = match parse(data, pos)? {
                     Value::Bytes(b) => String::from_utf8(b.to_vec())
-                        .map_err(|_| TrError::InvalidTorrent(String::from("invalid utf8 key")))?,
-                    _ => {
-                        return Err(TrError::InvalidTorrent(String::from("dict key not string")));
-                    }
+                        .map_err(|_| BencodeError::InvalidUtf8("dictionary key"))?,
+                    _ => return Err(BencodeError::DictKeyNotString),
                 };
                 let val = parse(data, pos)?;
                 map.insert(key, val);
@@ -75,26 +75,26 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Value<'a>> {
                 *pos += 1;
             }
             if *pos >= data.len() {
-                return Err(TrError::InvalidTorrent(String::from(
-                    "truncated string length",
-                )));
+                return Err(BencodeError::TruncatedStringLength);
             }
-            let len_str =
-                std::str::from_utf8(&data[start..*pos]).map_err(|_| "invalid utf8 length")?;
-            let len = len_str.parse::<usize>().map_err(|_| "bad string length")?;
+            let len_str = std::str::from_utf8(&data[start..*pos])
+                .map_err(|_| BencodeError::InvalidUtf8("string length"))?;
+            let len = len_str
+                .parse::<usize>()
+                .map_err(|_| BencodeError::InvalidStringLength)?;
             *pos += 1;
             let end = (*pos)
                 .checked_add(len)
-                .ok_or_else(|| TrError::InvalidTorrent(String::from("string length overflow")))?;
+                .ok_or(BencodeError::StringLengthOverflow)?;
             if end > data.len() {
-                return Err(TrError::InvalidTorrent(String::from("truncated string")));
+                return Err(BencodeError::TruncatedString);
             }
             let slice = &data[*pos..end];
             *pos = end;
             Ok(Value::Bytes(slice))
         }
-        Some(_) => Err("unknown token".into()),
-        None => Err("unexpected EOF".into()),
+        Some(byte) => Err(BencodeError::UnexpectedToken(*byte)),
+        None => Err(BencodeError::UnexpectedEof),
     }
 }
 
