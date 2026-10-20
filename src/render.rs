@@ -259,10 +259,6 @@ impl FileTree {
         Ok(())
     }
 
-    fn fmt_tree(&self, f: &mut Formatter<'_>) -> FmtResult {
-        self.fmt_children(f, "")
-    }
-
     fn fmt_branch(&self, f: &mut Formatter<'_>, prefix: &str, is_last: bool) -> FmtResult {
         let (connector, child_prefix) = if is_last {
             ("└── ", "    ")
@@ -287,7 +283,7 @@ impl FileTree {
 
 impl Display for FileTree {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        self.fmt_tree(f)
+        self.fmt_children(f, "")
     }
 }
 
