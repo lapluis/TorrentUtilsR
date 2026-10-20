@@ -103,7 +103,7 @@ The `-w, --walk-mode` option controls how files are ordered when creating torren
 
 ## Configuration
 
-TorrentUtilsR supports configuration via a TOML file. By default, it looks for `config.toml` in the current directory.
+TorrentUtilsR supports configuration via a TOML file. By default, it looks for `config.toml` next to the executable (for `cargo run`, the relevant `target/<profile>` directory); use `-g/--config` to load a different file.
 
 ### Example Configuration
 
