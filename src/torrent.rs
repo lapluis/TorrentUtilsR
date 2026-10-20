@@ -1,11 +1,11 @@
-use std::collections::HashMap;
 use std::fs::{File, read};
 use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
-use crate::bencode::{bencode_int, bencode_string};
+use crate::codec::{Value, bencode_int, bencode_string, decode};
+use crate::progress::ProgressReporter;
 use crate::tr_file::TrFile;
-use crate::tr_info::{CreateOptions, ProgressReporter, TrInfo};
+use crate::tr_info::{CreateOptions, TrInfo};
 use crate::utils::{TrError, TrResult};
 
 #[derive(Clone, Debug)]
@@ -71,104 +71,9 @@ impl Torrent {
     }
 
     pub fn from_bytes(bcode: &[u8]) -> TrResult<Self> {
-        enum Bencode<'a> {
-            Int(usize),
-            UInt(i64),
-            Bytes(&'a [u8]),
-            List(Vec<Bencode<'a>>),
-            Dict(HashMap<String, Bencode<'a>>),
-        }
-
-        let mut pos = 0;
-
-        fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Bencode<'a>> {
-            match data.get(*pos) {
-                Some(b'i') => {
-                    *pos += 1;
-                    let start = *pos;
-                    while *pos < data.len() && data[*pos] != b'e' {
-                        *pos += 1;
-                    }
-                    if *pos >= data.len() {
-                        return Err("unterminated integer".into());
-                    }
-                    let num_str = std::str::from_utf8(&data[start..*pos])
-                        .map_err(|_| "invalid utf8 in int")?;
-                    *pos += 1;
-                    if num_str.starts_with("-") {
-                        let val = num_str.parse::<i64>().map_err(|_| "invalid int")?;
-                        Ok(Bencode::UInt(val))
-                    } else {
-                        let val = num_str.parse::<usize>().map_err(|_| "invalid int")?;
-                        Ok(Bencode::Int(val))
-                    }
-                }
-                Some(b'l') => {
-                    *pos += 1;
-                    let mut items = Vec::new();
-                    while data.get(*pos) != Some(&b'e') {
-                        items.push(parse_bencode(data, pos)?);
-                    }
-                    *pos += 1;
-                    Ok(Bencode::List(items))
-                }
-                Some(b'd') => {
-                    *pos += 1;
-                    let mut map = HashMap::new();
-                    while data.get(*pos) != Some(&b'e') {
-                        let key = match parse_bencode(data, pos)? {
-                            Bencode::Bytes(b) => String::from_utf8(b.to_vec()).map_err(|_| {
-                                TrError::InvalidTorrent(String::from("invalid utf8 key"))
-                            })?,
-                            _ => {
-                                return Err(TrError::InvalidTorrent(String::from(
-                                    "dict key not string",
-                                )));
-                            }
-                        };
-                        let val = parse_bencode(data, pos)?;
-                        map.insert(key, val);
-                    }
-                    *pos += 1;
-                    Ok(Bencode::Dict(map))
-                }
-                Some(b'0'..=b'9') => {
-                    let start = *pos;
-                    while *pos < data.len() && data[*pos] != b':' {
-                        *pos += 1;
-                    }
-                    if *pos >= data.len() {
-                        return Err(TrError::InvalidTorrent(String::from(
-                            "truncated string length",
-                        )));
-                    }
-                    let len_str = std::str::from_utf8(&data[start..*pos])
-                        .map_err(|_| "invalid utf8 length")?;
-                    let len = len_str.parse::<usize>().map_err(|_| "bad string length")?;
-                    *pos += 1;
-                    let end = (*pos).checked_add(len).ok_or_else(|| {
-                        TrError::InvalidTorrent(String::from("string length overflow"))
-                    })?;
-                    if end > data.len() {
-                        return Err(TrError::InvalidTorrent(String::from("truncated string")));
-                    }
-                    let slice = &data[*pos..end];
-                    *pos = end;
-                    Ok(Bencode::Bytes(slice))
-                }
-                Some(_) => Err("unknown token".into()),
-                None => Err("unexpected EOF".into()),
-            }
-        }
-
-        let root = parse_bencode(bcode, &mut pos)?;
-        if pos != bcode.len() {
-            return Err(TrError::InvalidTorrent(String::from(
-                "trailing data after torrent",
-            )));
-        }
+        let root = decode(bcode)?;
         let tr_dict = match root {
-            Bencode::Dict(m) => m,
+            Value::Dict(m) => m,
             _ => {
                 return Err(TrError::InvalidTorrent(String::from(
                     "torrent root is not a dictionary",
@@ -177,23 +82,23 @@ impl Torrent {
         };
 
         let info_dict = match tr_dict.get("info") {
-            Some(Bencode::Dict(m)) => m,
+            Some(Value::Dict(m)) => m,
             _ => {
                 return Err(TrError::InvalidTorrent(String::from("missing info dict")));
             }
         };
 
         let tr_files = match info_dict.get("files") {
-            Some(Bencode::List(files)) => {
+            Some(Value::List(files)) => {
                 let mut out = Vec::new();
                 for file in files {
-                    let Bencode::Dict(m) = file else {
+                    let Value::Dict(m) = file else {
                         return Err(TrError::InvalidTorrent(String::from(
                             "files entry is not a dictionary",
                         )));
                     };
                     let length = match m.get("length") {
-                        Some(Bencode::Int(i)) => *i,
+                        Some(Value::Int(i)) => *i,
                         _ => {
                             return Err(TrError::InvalidTorrent(String::from(
                                 "file length invalid",
@@ -201,10 +106,10 @@ impl Torrent {
                         }
                     };
                     let path = match m.get("path") {
-                        Some(Bencode::List(parts)) => {
+                        Some(Value::List(parts)) => {
                             let mut ps = Vec::new();
                             for part in parts {
-                                let Bencode::Bytes(b) = part else {
+                                let Value::Bytes(b) = part else {
                                     return Err(TrError::InvalidTorrent(String::from(
                                         "file path component is not a string",
                                     )));
@@ -225,15 +130,15 @@ impl Torrent {
         };
 
         let length = match info_dict.get("length") {
-            Some(Bencode::Int(i)) => Some(*i),
+            Some(Value::Int(i)) => Some(*i),
             _ => None,
         };
         let name = match info_dict.get("name") {
-            Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+            Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
             _ => None,
         };
         let piece_length = match info_dict.get("piece length") {
-            Some(Bencode::Int(i)) => *i,
+            Some(Value::Int(i)) => *i,
             _ => {
                 return Err(TrError::InvalidTorrent(String::from(
                     "piece length missing",
@@ -241,15 +146,15 @@ impl Torrent {
             }
         };
         let pieces = match info_dict.get("pieces") {
-            Some(Bencode::Bytes(b)) => b.to_vec(),
+            Some(Value::Bytes(b)) => b.to_vec(),
             _ => return Err(TrError::InvalidTorrent(String::from("pieces missing"))),
         };
         let private = match info_dict.get("private") {
-            Some(Bencode::Int(i)) => *i != 0,
+            Some(Value::Int(i)) => *i != 0,
             _ => false,
         };
         let source = match info_dict.get("source") {
-            Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+            Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
             _ => None,
         };
         let tr_info = TrInfo::from_parts(
@@ -264,19 +169,19 @@ impl Torrent {
 
         Ok(Torrent {
             announce: match tr_dict.get("announce") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             announce_list: match tr_dict.get("announce-list") {
-                Some(Bencode::List(lists)) => {
+                Some(Value::List(lists)) => {
                     let mut alist: Vec<Vec<String>> = Vec::new();
                     for tier in lists {
                         match tier {
-                            Bencode::List(urls) => {
+                            Value::List(urls) => {
                                 let mut tier_list: Vec<String> = Vec::new();
                                 for url in urls {
                                     match url {
-                                        Bencode::Bytes(b) => {
+                                        Value::Bytes(b) => {
                                             tier_list.push(String::from_utf8(b.to_vec())?)
                                         }
                                         _ => {
@@ -300,24 +205,24 @@ impl Torrent {
                 _ => None,
             },
             comment: match tr_dict.get("comment") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             created_by: match tr_dict.get("created by") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             creation_date: match tr_dict.get("creation date") {
-                Some(Bencode::UInt(i)) => Some(*i),
-                Some(Bencode::Int(i)) => Some(*i as i64),
+                Some(Value::UInt(i)) => Some(*i),
+                Some(Value::Int(i)) => Some(*i as i64),
                 _ => None,
             },
             encoding: match tr_dict.get("encoding") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             hash: match tr_dict.get("hash") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             info: Some(tr_info),

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::bencode::{bencode_string, bencode_string_list, bencode_uint};
+use crate::codec::{bencode_string, bencode_string_list, bencode_uint};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrFile {
