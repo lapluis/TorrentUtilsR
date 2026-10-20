@@ -1,18 +1,12 @@
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter, Result as fmtResult};
 use std::fs::{File, read};
 use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
-use chrono::{Local, TimeZone};
-
-use crate::bencode::{bencode_int, bencode_string};
+use crate::codec::{Value, bencode_int, bencode_string, decode};
+use crate::error::{TrError, TrResult};
+use crate::progress::ProgressReporter;
 use crate::tr_file::TrFile;
-use crate::tr_info::{CreateOptions, ProgressReporter, TrInfo};
-use crate::utils::{TrError, TrResult, human_size};
-
-const MAX_DISPLAYED_ANNOUNCES: usize = 20;
-const MAX_DISPLAYED_FILES: usize = 100;
+use crate::tr_info::{CreateOptions, TrInfo};
 
 #[derive(Clone, Debug)]
 pub struct Torrent {
@@ -62,11 +56,9 @@ impl Torrent {
     pub fn write_to_file(&self, torrent_path: impl AsRef<Path>, force: bool) -> TrResult<()> {
         let torrent_path = torrent_path.as_ref();
         if !force && torrent_path.exists() {
-            return Err(ioError::new(
-                ErrorKind::AlreadyExists,
-                "File already exists, use -f to overwrite",
-            )
-            .into());
+            return Err(
+                ioError::new(ErrorKind::AlreadyExists, "output file already exists").into(),
+            );
         }
         let mut file = File::create(torrent_path)?;
         file.write_all(&self.to_bytes()?)?;
@@ -79,97 +71,9 @@ impl Torrent {
     }
 
     pub fn from_bytes(bcode: &[u8]) -> TrResult<Self> {
-        enum Bencode<'a> {
-            Int(usize),
-            UInt(i64),
-            Bytes(&'a [u8]),
-            List(Vec<Bencode<'a>>),
-            Dict(HashMap<String, Bencode<'a>>),
-        }
-
-        let mut pos = 0;
-
-        fn parse_bencode<'a>(data: &'a [u8], pos: &mut usize) -> TrResult<Bencode<'a>> {
-            match data.get(*pos) {
-                Some(b'i') => {
-                    *pos += 1;
-                    let start = *pos;
-                    while *pos < data.len() && data[*pos] != b'e' {
-                        *pos += 1;
-                    }
-                    if *pos >= data.len() {
-                        return Err("unterminated integer".into());
-                    }
-                    let num_str = std::str::from_utf8(&data[start..*pos])
-                        .map_err(|_| "invalid utf8 in int")?;
-                    *pos += 1;
-                    if num_str.starts_with("-") {
-                        let val = num_str.parse::<i64>().map_err(|_| "invalid int")?;
-                        Ok(Bencode::UInt(val))
-                    } else {
-                        let val = num_str.parse::<usize>().map_err(|_| "invalid int")?;
-                        Ok(Bencode::Int(val))
-                    }
-                }
-                Some(b'l') => {
-                    *pos += 1;
-                    let mut items = Vec::new();
-                    while data.get(*pos) != Some(&b'e') {
-                        items.push(parse_bencode(data, pos)?);
-                    }
-                    *pos += 1;
-                    Ok(Bencode::List(items))
-                }
-                Some(b'd') => {
-                    *pos += 1;
-                    let mut map = HashMap::new();
-                    while data.get(*pos) != Some(&b'e') {
-                        let key = match parse_bencode(data, pos)? {
-                            Bencode::Bytes(b) => String::from_utf8(b.to_vec()).map_err(|_| {
-                                TrError::InvalidTorrent(String::from("invalid utf8 key"))
-                            })?,
-                            _ => {
-                                return Err(TrError::InvalidTorrent(String::from(
-                                    "dict key not string",
-                                )));
-                            }
-                        };
-                        let val = parse_bencode(data, pos)?;
-                        map.insert(key, val);
-                    }
-                    *pos += 1;
-                    Ok(Bencode::Dict(map))
-                }
-                Some(b'0'..=b'9') => {
-                    let start = *pos;
-                    while *pos < data.len() && data[*pos] != b':' {
-                        *pos += 1;
-                    }
-                    if *pos >= data.len() {
-                        return Err(TrError::InvalidTorrent(String::from(
-                            "truncated string length",
-                        )));
-                    }
-                    let len_str = std::str::from_utf8(&data[start..*pos])
-                        .map_err(|_| "invalid utf8 length")?;
-                    let len = len_str.parse::<usize>().map_err(|_| "bad string length")?;
-                    *pos += 1;
-                    let end = *pos + len;
-                    if end > data.len() {
-                        return Err(TrError::InvalidTorrent(String::from("truncated string")));
-                    }
-                    let slice = &data[*pos..end];
-                    *pos = end;
-                    Ok(Bencode::Bytes(slice))
-                }
-                Some(_) => Err("unknown token".into()),
-                None => Err("unexpected EOF".into()),
-            }
-        }
-
-        let root = parse_bencode(bcode, &mut pos)?;
+        let root = decode(bcode)?;
         let tr_dict = match root {
-            Bencode::Dict(m) => m,
+            Value::Dict(m) => m,
             _ => {
                 return Err(TrError::InvalidTorrent(String::from(
                     "torrent root is not a dictionary",
@@ -178,96 +82,106 @@ impl Torrent {
         };
 
         let info_dict = match tr_dict.get("info") {
-            Some(Bencode::Dict(m)) => m,
+            Some(Value::Dict(m)) => m,
             _ => {
                 return Err(TrError::InvalidTorrent(String::from("missing info dict")));
             }
         };
 
         let tr_files = match info_dict.get("files") {
-            Some(Bencode::List(files)) => {
+            Some(Value::List(files)) => {
                 let mut out = Vec::new();
                 for file in files {
-                    if let Bencode::Dict(m) = file {
-                        let length = match m.get("length") {
-                            Some(Bencode::Int(i)) => *i,
-                            _ => {
-                                return Err(TrError::InvalidTorrent(String::from(
-                                    "file length invalid",
-                                )));
+                    let Value::Dict(m) = file else {
+                        return Err(TrError::InvalidTorrent(String::from(
+                            "files entry is not a dictionary",
+                        )));
+                    };
+                    let length = match m.get("length") {
+                        Some(Value::Int(i)) => *i,
+                        _ => {
+                            return Err(TrError::InvalidTorrent(String::from(
+                                "file length invalid",
+                            )));
+                        }
+                    };
+                    let path = match m.get("path") {
+                        Some(Value::List(parts)) => {
+                            let mut ps = Vec::new();
+                            for part in parts {
+                                let Value::Bytes(b) = part else {
+                                    return Err(TrError::InvalidTorrent(String::from(
+                                        "file path component is not a string",
+                                    )));
+                                };
+                                ps.push(String::from_utf8(b.to_vec())?);
                             }
-                        };
-                        let path = match m.get("path") {
-                            Some(Bencode::List(parts)) => {
-                                let mut ps = Vec::new();
-                                for part in parts {
-                                    if let Bencode::Bytes(b) = part {
-                                        ps.push(String::from_utf8(b.to_vec())?);
-                                    }
-                                }
-                                ps
-                            }
-                            _ => {
-                                return Err(TrError::InvalidTorrent(String::from(
-                                    "file path invalid",
-                                )));
-                            }
-                        };
-                        out.push(TrFile { length, path });
-                    }
+                            ps
+                        }
+                        _ => {
+                            return Err(TrError::InvalidTorrent(String::from("file path invalid")));
+                        }
+                    };
+                    out.push(TrFile::new(length, path));
                 }
                 Some(out)
             }
             _ => None,
         };
 
-        let tr_info = TrInfo {
-            files: tr_files,
-            length: match info_dict.get("length") {
-                Some(Bencode::Int(i)) => Some(*i),
-                _ => None,
-            },
-            name: match info_dict.get("name") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
-            piece_length: match info_dict.get("piece length") {
-                Some(Bencode::Int(i)) => *i,
-                _ => {
-                    return Err(TrError::InvalidTorrent(String::from(
-                        "piece length missing",
-                    )));
-                }
-            },
-            pieces: match info_dict.get("pieces") {
-                Some(Bencode::Bytes(b)) => b.to_vec(),
-                _ => return Err(TrError::InvalidTorrent(String::from("pieces missing"))),
-            },
-            private: match info_dict.get("private") {
-                Some(Bencode::Int(i)) => *i != 0,
-                _ => false,
-            },
-            source: match info_dict.get("source") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
+        let length = match info_dict.get("length") {
+            Some(Value::Int(i)) => Some(*i),
+            _ => None,
         };
+        let name = match info_dict.get("name") {
+            Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+            _ => None,
+        };
+        let piece_length = match info_dict.get("piece length") {
+            Some(Value::Int(i)) => *i,
+            _ => {
+                return Err(TrError::InvalidTorrent(String::from(
+                    "piece length missing",
+                )));
+            }
+        };
+        let pieces = match info_dict.get("pieces") {
+            Some(Value::Bytes(b)) => b.to_vec(),
+            _ => return Err(TrError::InvalidTorrent(String::from("pieces missing"))),
+        };
+        let private = match info_dict.get("private") {
+            Some(Value::Int(i)) => *i != 0,
+            _ => false,
+        };
+        let source = match info_dict.get("source") {
+            Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+            _ => None,
+        };
+        let tr_info = TrInfo::from_parts(
+            tr_files,
+            length,
+            name,
+            piece_length,
+            pieces,
+            private,
+            source,
+        )?;
 
         Ok(Torrent {
             announce: match tr_dict.get("announce") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             announce_list: match tr_dict.get("announce-list") {
-                Some(Bencode::List(lists)) => {
+                Some(Value::List(lists)) => {
                     let mut alist: Vec<Vec<String>> = Vec::new();
                     for tier in lists {
                         match tier {
-                            Bencode::List(urls) => {
+                            Value::List(urls) => {
                                 let mut tier_list: Vec<String> = Vec::new();
                                 for url in urls {
                                     match url {
-                                        Bencode::Bytes(b) => {
+                                        Value::Bytes(b) => {
                                             tier_list.push(String::from_utf8(b.to_vec())?)
                                         }
                                         _ => {
@@ -291,24 +205,24 @@ impl Torrent {
                 _ => None,
             },
             comment: match tr_dict.get("comment") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             created_by: match tr_dict.get("created by") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             creation_date: match tr_dict.get("creation date") {
-                Some(Bencode::UInt(i)) => Some(*i),
-                Some(Bencode::Int(i)) => Some(*i as i64),
+                Some(Value::UInt(i)) => Some(*i),
+                Some(Value::Int(i)) => Some(*i as i64),
                 _ => None,
             },
             encoding: match tr_dict.get("encoding") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             hash: match tr_dict.get("hash") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+                Some(Value::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
                 _ => None,
             },
             info: Some(tr_info),
@@ -317,6 +231,34 @@ impl Torrent {
 
     pub fn get_info(&self) -> Option<&TrInfo> {
         self.info.as_ref()
+    }
+
+    pub fn announce(&self) -> Option<&str> {
+        self.announce.as_deref()
+    }
+
+    pub fn announce_list(&self) -> Option<&[Vec<String>]> {
+        self.announce_list.as_deref()
+    }
+
+    pub fn comment(&self) -> Option<&str> {
+        self.comment.as_deref()
+    }
+
+    pub fn created_by(&self) -> Option<&str> {
+        self.created_by.as_deref()
+    }
+
+    pub fn creation_date(&self) -> Option<i64> {
+        self.creation_date
+    }
+
+    pub fn encoding(&self) -> Option<&str> {
+        self.encoding.as_deref()
+    }
+
+    pub fn hash(&self) -> Option<&str> {
+        self.hash.as_deref()
     }
 
     pub fn to_bytes(&self) -> TrResult<Vec<u8>> {
@@ -362,140 +304,9 @@ impl Torrent {
             bcode.extend(bencode_string("info"));
             bcode.extend(info.bencode());
         } else {
-            return Err(TrError::MissingField(String::from("info")));
+            return Err(TrError::MissingField("info"));
         }
         bcode.push(b'e');
         Ok(bcode)
-    }
-}
-
-impl Display for Torrent {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmtResult {
-        writeln!(f, "Torrent Info:")?;
-
-        match &self.info {
-            Some(info) => {
-                if let Some(name) = &info.name {
-                    writeln!(f, "  Name: {name}")?;
-                }
-
-                if let Some(announce_list) = &self.announce_list {
-                    writeln!(f, "  Announce List:")?;
-                    let pad = if announce_list.len() >= 10 { 2 } else { 1 };
-                    let mut shown = 0;
-                    let mut truncated = false;
-                    for (tier_id, tier) in announce_list.iter().enumerate() {
-                        let tier_str = if pad == 2 {
-                            format!("{tier_id:02}")
-                        } else {
-                            format!("{tier_id}")
-                        };
-                        for url in tier {
-                            if shown < MAX_DISPLAYED_ANNOUNCES {
-                                writeln!(f, "    Tier {tier_str}: {url}")?;
-                                shown += 1;
-                            } else {
-                                truncated = true;
-                                break;
-                            }
-                        }
-                        if truncated {
-                            break;
-                        }
-                    }
-                    if truncated {
-                        writeln!(f, "    Truncated at {MAX_DISPLAYED_ANNOUNCES} announces...")?;
-                    }
-                }
-
-                if let Some(comment) = &self.comment {
-                    writeln!(f, "  Comment: {comment}")?;
-                }
-                if let Some(created_by) = &self.created_by {
-                    writeln!(f, "  Created by: {created_by}")?;
-                }
-                if let Some(date) = self.creation_date {
-                    let dt = Local
-                        .timestamp_opt(date, 0)
-                        .unwrap()
-                        .format("%Y-%m-%d %H:%M:%S");
-                    writeln!(f, "  Creation date: {date} [{dt}]")?;
-                }
-                if let Some(encoding) = &self.encoding {
-                    writeln!(f, "  Encoding: {encoding}")?;
-                }
-                if let Some(hash) = &self.hash {
-                    writeln!(f, "  Hash: {hash}")?;
-                }
-
-                writeln!(f, "  Private: {}", info.private)?;
-                if let Some(source) = &info.source {
-                    writeln!(f, "  Source: {}", source)?;
-                }
-
-                writeln!(
-                    f,
-                    "  Piece length: {} [{}]",
-                    info.piece_length,
-                    human_size(info.piece_length)
-                )?;
-
-                let total_length = if let Some(files) = &info.files {
-                    files.iter().map(|f| f.length).sum()
-                } else {
-                    info.length.unwrap_or_default()
-                };
-                writeln!(
-                    f,
-                    "  Length: {} [{}]",
-                    total_length,
-                    human_size(total_length)
-                )?;
-
-                writeln!(
-                    f,
-                    "  Pieces: {}",
-                    if info.piece_length > 0 {
-                        total_length.div_ceil(info.piece_length)
-                    } else {
-                        0
-                    }
-                )?;
-
-                if let Some(files) = &info.files {
-                    writeln!(
-                        f,
-                        "  Files:  {}",
-                        info.files.as_ref().map(|f| f.len()).unwrap_or(0)
-                    )?;
-                    writeln!(f, "  RelPath [Length]:")?;
-                    let mut shown = 0;
-                    let mut truncated = false;
-                    for file in files {
-                        if shown < MAX_DISPLAYED_FILES {
-                            let path_str = file.path.join("/");
-                            writeln!(
-                                f,
-                                "    - {path_str} [{} ({})]",
-                                file.length,
-                                human_size(file.length)
-                            )?;
-                            shown += 1;
-                        } else {
-                            truncated = true;
-                            break;
-                        }
-                    }
-                    if truncated {
-                        writeln!(f, "    Truncated at {MAX_DISPLAYED_FILES} files...")?;
-                    }
-                }
-            }
-            None => {
-                writeln!(f, "  [No torrent info available]")?;
-            }
-        }
-
-        Ok(())
     }
 }

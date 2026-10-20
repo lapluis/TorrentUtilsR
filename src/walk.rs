@@ -1,0 +1,123 @@
+use std::cmp;
+use std::fs::metadata;
+use std::path::{MAIN_SEPARATOR, Path};
+
+use natord::compare_ignore_case;
+use walkdir::WalkDir;
+
+use crate::error::{TrError, TrResult};
+use crate::tr_file::TrFile;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WalkMode {
+    #[default]
+    Default,
+    Alphabetical,
+    BreadthFirstAlphabetical, // tu like
+    BreadthFirstLevel,        // qb like
+    FileSize,
+}
+
+pub(crate) struct WalkedFiles {
+    pub(crate) name: String,
+    pub(crate) single_file: bool,
+    pub(crate) files: Vec<TrFile>,
+}
+
+pub(crate) fn walk_target(target_path: &Path, walk_mode: WalkMode) -> TrResult<WalkedFiles> {
+    let base_path = target_path;
+    let name = base_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            TrError::InvalidPath(format!(
+                "Invalid file name in path: {}",
+                base_path.display()
+            ))
+        })?;
+    let mut single_file = false;
+
+    let base_metadata = metadata(base_path)?;
+    let mut tr_files: Vec<TrFile> = Vec::new();
+
+    if base_metadata.is_file() {
+        single_file = true;
+        tr_files.push(TrFile::new(base_metadata.len() as usize, Vec::new()));
+    } else if base_metadata.is_dir() {
+        for entry in WalkDir::new(base_path)
+            .follow_links(true)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.file_type().is_file() {
+                let entry_metadata = metadata(entry.path())?;
+                let relative_path = entry
+                    .path()
+                    .strip_prefix(base_path)
+                    .map_err(|_| {
+                        TrError::InvalidPath(String::from("Failed to create relative path"))
+                    })?
+                    .to_str()
+                    .ok_or_else(|| {
+                        TrError::InvalidPath(String::from("Path contains invalid UTF-8"))
+                    })?
+                    .split(MAIN_SEPARATOR)
+                    .map(str::to_owned)
+                    .collect();
+
+                tr_files.push(TrFile::new(entry_metadata.len() as usize, relative_path));
+            }
+        }
+    } else {
+        return Err(TrError::InvalidPath(String::from(
+            "Target path is neither a file nor a directory",
+        )));
+    }
+
+    match walk_mode {
+        WalkMode::Default => {}
+        WalkMode::Alphabetical => {
+            tr_files.sort_by(|a, b| a.path().cmp(b.path()));
+        }
+        WalkMode::BreadthFirstAlphabetical => {
+            tr_files.sort_by(|a, b| {
+                a.path()
+                    .iter()
+                    .zip(b.path().iter())
+                    .find_map(|(seg_a, seg_b)| {
+                        let cmp_res = compare_ignore_case(seg_a, seg_b);
+                        (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
+                    })
+                    .unwrap_or_else(|| a.path().len().cmp(&b.path().len()))
+            });
+        }
+        WalkMode::BreadthFirstLevel => {
+            tr_files.sort_by(|a, b| {
+                a.path()
+                    .iter()
+                    .zip(b.path().iter())
+                    .enumerate()
+                    .find_map(|(depth, (seg_a, seg_b))| {
+                        match (depth == a.path().len() - 1, depth == b.path().len() - 1) {
+                            (true, false) => Some(cmp::Ordering::Less),
+                            (false, true) => Some(cmp::Ordering::Greater),
+                            _ => {
+                                let cmp_res = compare_ignore_case(seg_a, seg_b);
+                                (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
+                            }
+                        }
+                    })
+                    .unwrap_or_else(|| a.path().len().cmp(&b.path().len()))
+            });
+        }
+        WalkMode::FileSize => {
+            tr_files.sort_by_key(|file| cmp::Reverse(file.length()));
+        }
+    }
+
+    Ok(WalkedFiles {
+        name: name.to_string(),
+        single_file,
+        files: tr_files,
+    })
+}

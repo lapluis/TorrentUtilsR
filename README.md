@@ -239,9 +239,10 @@ torrent.write_to_file("data.torrent", false)?;
 ```
 
 Pass an implementation of `ProgressReporter` instead of `None` when an application wants progress
-updates. Verification returns a `VerificationReport`; rendering that report is the caller's
-responsibility. Library-only consumers can disable CLI dependencies with
-`default-features = false`.
+updates. Reporters implement `begin`, `advance`, `finish`, and `abandon`; the library calls
+`abandon` automatically when hashing or verification fails. Verification returns a
+`VerificationReport`; rendering that report is the caller's responsibility. Library-only consumers
+can disable CLI dependencies with `default-features = false`.
 
 ## Thanks to
 

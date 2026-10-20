@@ -20,7 +20,7 @@ pub(crate) enum OutputStream {
     Stderr,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OutputStyle {
     Plain,
     Success,
@@ -193,32 +193,48 @@ pub(crate) fn print_verification_line(label: &str, total: usize, passed: usize, 
     );
 }
 
-fn colorize_torrent_info(text: &str, color: bool) -> String {
-    if !color {
-        return text.to_string();
-    }
-
-    text.lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with('-') || trimmed.starts_with('[') {
-                return line.to_string();
-            }
-            match line.find(':') {
-                Some(index) => format!(
-                    "{COLOR_LABEL}{}{COLOR_RESET}{}",
-                    &line[..=index],
-                    &line[index + 1..]
-                ),
-                None => line.to_string(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+pub(crate) struct StyledSpan {
+    pub(crate) style: OutputStyle,
+    pub(crate) text: String,
 }
 
-pub(crate) fn print_torrent_info(text: &str) {
-    println!("{}", colorize_torrent_info(text, stdout().is_terminal()));
+impl StyledSpan {
+    pub(crate) fn plain(text: impl Into<String>) -> Self {
+        Self {
+            style: OutputStyle::Plain,
+            text: text.into(),
+        }
+    }
+
+    pub(crate) fn label(text: impl Into<String>) -> Self {
+        Self {
+            style: OutputStyle::Label,
+            text: text.into(),
+        }
+    }
+}
+
+pub(crate) type StyledLine = Vec<StyledSpan>;
+
+fn write_styled_line(output: &mut impl Write, line: &[StyledSpan], color: bool) {
+    for span in line {
+        let ansi = span.style.ansi();
+        if color && !ansi.is_empty() {
+            let _ = write!(output, "{ansi}{}{COLOR_RESET}", span.text);
+        } else {
+            let _ = write!(output, "{}", span.text);
+        }
+    }
+    let _ = writeln!(output);
+}
+
+pub(crate) fn print_styled_lines(lines: &[StyledLine]) {
+    let stdout = stdout();
+    let color = stdout.is_terminal();
+    let mut output = stdout.lock();
+    for line in lines {
+        write_styled_line(&mut output, line, color);
+    }
 }
 
 struct TerminalProgressState {
@@ -250,6 +266,25 @@ impl CliProgress {
                 last_percent: None,
             }),
         }
+    }
+
+    fn take_bar(&self) -> Option<ProgressBar> {
+        match self.bar.lock() {
+            Ok(mut bar) => bar.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        }
+    }
+
+    fn clear_terminal(&self) {
+        let mut terminal = match self.terminal.lock() {
+            Ok(terminal) => terminal,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if terminal.enabled {
+            write_terminal_progress(TermProgress::remove());
+            terminal.enabled = false;
+        }
+        terminal.last_percent = None;
     }
 }
 
@@ -304,7 +339,7 @@ impl ProgressReporter for CliProgress {
     }
 
     fn finish(&self) {
-        if let Some(pb) = self.bar.lock().expect("progress lock poisoned").take() {
+        if let Some(pb) = self.take_bar() {
             let elapsed = pb.elapsed();
             let pieces_count = pb.length().unwrap_or_default();
             pb.finish_and_clear();
@@ -320,15 +355,14 @@ impl ProgressReporter for CliProgress {
             println!("Processed {pieces_count} pieces in {elapsed:.2?}");
         }
 
-        let mut terminal = self
-            .terminal
-            .lock()
-            .expect("terminal progress lock poisoned");
-        if terminal.enabled {
-            write_terminal_progress(TermProgress::remove());
-            terminal.enabled = false;
+        self.clear_terminal();
+    }
+
+    fn abandon(&self) {
+        if let Some(pb) = self.take_bar() {
+            pb.finish_and_clear();
         }
-        terminal.last_percent = None;
+        self.clear_terminal();
     }
 }
 
@@ -378,11 +412,21 @@ mod tests {
     }
 
     #[test]
-    fn torrent_info_colorization_leaves_values_uncolored() {
-        let output = colorize_torrent_info("Torrent Info:\n  Name: example", true);
+    fn styled_lines_color_only_labeled_spans() {
+        let line = vec![StyledSpan::label("  Name:"), StyledSpan::plain(" example")];
+
+        let mut colored = Vec::new();
+        write_styled_line(&mut colored, &line, true);
         assert_eq!(
-            output,
-            "\x1b[94mTorrent Info:\x1b[0m\n\x1b[94m  Name:\x1b[0m example"
+            String::from_utf8(colored).expect("styled output is UTF-8"),
+            "\x1b[94m  Name:\x1b[0m example\n"
+        );
+
+        let mut plain = Vec::new();
+        write_styled_line(&mut plain, &line, false);
+        assert_eq!(
+            String::from_utf8(plain).expect("styled output is UTF-8"),
+            "  Name: example\n"
         );
     }
 }

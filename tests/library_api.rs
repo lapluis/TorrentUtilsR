@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use torrent_utils::{
-    CreateOptions, FileTree, ProgressReporter, Torrent, TrError, TrFile, TrInfo,
-    VerificationOptions, WalkMode, human_size,
+    BencodeError, CreateOptions, ProgressReporter, Torrent, TrError, TrFile, TrInfo,
+    VerificationOptions, WalkMode,
 };
 
 struct TestDir(PathBuf);
@@ -130,9 +130,12 @@ fn verifies_multi_file_hash_and_metadata_failures() {
         .create_torrent(&target, &create_options(4), None)
         .expect("create multi-file torrent");
     let info = torrent.get_info().expect("torrent has info");
-    let files = info.files.as_ref().expect("multi-file torrent has files");
-    assert_eq!(files[0].path, ["a.bin"]);
-    assert_eq!(files[1].path, ["nested", "b.bin"]);
+    let files = info.files().expect("multi-file torrent has files");
+    assert_eq!(files[0].path(), ["a.bin"].map(String::from).as_slice());
+    assert_eq!(
+        files[1].path(),
+        ["nested", "b.bin"].map(String::from).as_slice()
+    );
 
     let report = info
         .verify(&target, &VerificationOptions { n_jobs: 2 }, None)
@@ -183,11 +186,11 @@ fn chunked_hashing_preserves_cross_file_piece_hashes() {
         multi_file_torrent
             .get_info()
             .expect("multi-file torrent has info")
-            .pieces,
+            .pieces(),
         single_file_torrent
             .get_info()
             .expect("single-file torrent has info")
-            .pieces
+            .pieces()
     );
 }
 
@@ -196,6 +199,7 @@ struct RecordingProgress {
     total: AtomicUsize,
     advanced: AtomicUsize,
     finished: AtomicUsize,
+    abandoned: AtomicUsize,
 }
 
 impl ProgressReporter for RecordingProgress {
@@ -209,6 +213,10 @@ impl ProgressReporter for RecordingProgress {
 
     fn finish(&self) {
         self.finished.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn abandon(&self) {
+        self.abandoned.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -227,6 +235,7 @@ fn reports_progress_for_every_piece() {
     assert_eq!(progress.total.load(Ordering::SeqCst), 3);
     assert_eq!(progress.advanced.load(Ordering::SeqCst), 3);
     assert_eq!(progress.finished.load(Ordering::SeqCst), 1);
+    assert_eq!(progress.abandoned.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -248,18 +257,68 @@ fn rejects_invalid_options_and_inconsistent_piece_data() {
         .expect_err("zero jobs must fail");
     assert!(matches!(error, TrError::InvalidConfig(_)));
 
-    let invalid_info = TrInfo {
-        files: None,
-        length: Some(3),
-        name: Some(String::from("payload.bin")),
-        piece_length: 2,
-        pieces: Vec::new(),
-        private: false,
-        source: None,
-    };
-    let error = invalid_info
-        .verify(&target, &VerificationOptions::default(), None)
-        .expect_err("piece count mismatch must fail");
+    let error = TrInfo::from_parts(
+        None,
+        Some(3),
+        Some(String::from("payload.bin")),
+        2,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("piece count mismatch must fail");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(
+        Some(vec![TrFile::new(1, vec![String::from("..")])]),
+        None,
+        Some(String::from("payload")),
+        1,
+        vec![0; 20],
+        false,
+        None,
+    )
+    .expect_err("path traversal must fail");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(
+        Some(Vec::new()),
+        Some(0),
+        Some(String::from("payload")),
+        1,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("files and length are mutually exclusive");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(None, Some(0), None, 1, Vec::new(), false, None)
+        .expect_err("name must be present");
+    assert!(matches!(error, TrError::MissingField(_)));
+
+    let error = TrInfo::from_parts(
+        None,
+        Some(0),
+        Some(String::from("payload")),
+        0,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("zero piece length must fail");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(
+        None,
+        Some(0),
+        Some(String::from("payload")),
+        1,
+        vec![0; 19],
+        false,
+        None,
+    )
+    .expect_err("partial piece hash must fail");
     assert!(matches!(error, TrError::InvalidTorrent(_)));
 }
 
@@ -270,9 +329,24 @@ fn parser_rejects_malformed_data() {
         &b"le"[..],
         &b"d4:infoe"[..],
         &b"d4:infod6:lengthi1eee"[..],
+        &b"d4:infod6:lengthi0e4:name2:..12:piece lengthi1e6:pieces0:ee"[..],
+        &b"d4:infod5:filesld6:lengthi1e4:pathl2:..eee4:name4:test12:piece lengthi1e6:pieces20:....................ee"[..],
+        &b"d4:infod6:lengthi0e4:name4:test12:piece lengthi1e6:pieces0:eeX"[..],
+        &b"d4:infod5:filesld6:lengthi1e4:pathl5:ai1eee4:name4:test12:piece lengthi1e6:pieces20:....................ee"[..],
+        &b"d4:infod5:filesli1ee4:name4:test12:piece lengthi1e6:pieces0:ee"[..],
+        &b"18446744073709551615:x"[..],
     ] {
         assert!(Torrent::from_bytes(malformed).is_err());
     }
+}
+
+#[test]
+fn parser_returns_structured_bencode_errors() {
+    let error = Torrent::from_bytes(b"x").expect_err("invalid bencode");
+    assert!(matches!(
+        error,
+        TrError::Bencode(BencodeError::UnexpectedToken(b'x'))
+    ));
 }
 
 #[test]
@@ -292,29 +366,12 @@ fn file_writes_respect_overwrite_policy() {
     let error = torrent
         .write_to_file(&torrent_path, false)
         .expect_err("second write is rejected");
+    let message = error.to_string();
     assert!(matches!(error, TrError::IO(error) if error.kind() == ErrorKind::AlreadyExists));
+    // Overwrite guidance such as "-f" belongs to the CLI, not the library.
+    assert!(message.contains("output file already exists"), "{message}");
+    assert!(!message.contains("-f"), "{message}");
     torrent
         .write_to_file(&torrent_path, true)
         .expect("forced write succeeds");
-}
-
-#[test]
-fn file_tree_and_human_sizes_are_deterministic() {
-    let files = vec![
-        TrFile {
-            length: 1024,
-            path: vec![String::from("dir"), String::from("b.bin")],
-        },
-        TrFile {
-            length: 3,
-            path: vec![String::from("a.txt")],
-        },
-    ];
-
-    assert_eq!(human_size(0), "0 B");
-    assert_eq!(human_size(1536), "1.50 KiB");
-    assert_eq!(
-        FileTree::build(&files).to_string(),
-        "├── a.txt (3 [3 B])\n└── dir\n    └── b.bin (1024 [1 KiB])\n"
-    );
 }
