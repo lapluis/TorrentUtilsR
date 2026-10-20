@@ -1,42 +1,13 @@
 #![cfg(feature = "cli")]
 
+mod common;
+
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-struct TestDir(PathBuf);
-
-impl TestDir {
-    fn new(name: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "torrent_utils_cli_{name}_{}_{}",
-            std::process::id(),
-            unique
-        ));
-        fs::create_dir(&path).expect("create test directory");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn missing_config(&self) -> String {
-        self.0.join("missing-config.toml").display().to_string()
-    }
-}
-
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use common::TestDir;
 
 fn binary_path() -> OsString {
     std::env::var_os("TORRENTUTILSR_TEST_BIN")
