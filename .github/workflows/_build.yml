@@ -37,7 +37,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The build script needs tags, but not the repository's full history.
           fetch-depth: 1

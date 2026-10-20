@@ -19,7 +19,7 @@ jobs:
       tag: ${{ steps.validate.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           fetch-tags: true
@@ -55,6 +55,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate-release.outputs.tag }}
+          fetch-depth: 1
+          fetch-tags: true
+
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
