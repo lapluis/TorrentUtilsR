@@ -99,13 +99,27 @@ impl VerificationReport {
 
 #[derive(Clone, Debug)]
 pub struct TrInfo {
-    pub files: Option<Vec<TrFile>>,
-    pub length: Option<usize>,
-    pub name: Option<String>,
-    pub piece_length: usize,
-    pub pieces: Vec<u8>,
-    pub private: bool,
-    pub source: Option<String>,
+    files: Option<Vec<TrFile>>,
+    length: Option<usize>,
+    name: Option<String>,
+    piece_length: usize,
+    pieces: Vec<u8>,
+    private: bool,
+    source: Option<String>,
+}
+
+fn is_safe_path_segment(segment: &str) -> bool {
+    if segment.is_empty() || segment == "." || segment == ".." || segment.contains('\0') {
+        return false;
+    }
+    if segment.contains('/') {
+        return false;
+    }
+    #[cfg(windows)]
+    if segment.contains('\\') || segment.contains(':') {
+        return false;
+    }
+    true
 }
 
 impl TrInfo {
@@ -142,10 +156,7 @@ impl TrInfo {
 
         if base_metadata.is_file() {
             single_file = true;
-            tr_files.push(TrFile {
-                length: base_metadata.len() as usize,
-                path: Vec::new(),
-            });
+            tr_files.push(TrFile::new(base_metadata.len() as usize, Vec::new()));
         } else if base_metadata.is_dir() {
             for entry in WalkDir::new(base_path)
                 .follow_links(true)
@@ -168,10 +179,7 @@ impl TrInfo {
                         .map(str::to_owned)
                         .collect();
 
-                    tr_files.push(TrFile {
-                        length: entry_metadata.len() as usize,
-                        path: relative_path,
-                    });
+                    tr_files.push(TrFile::new(entry_metadata.len() as usize, relative_path));
                 }
             }
         } else {
@@ -183,28 +191,28 @@ impl TrInfo {
         match tr_config.walk_mode {
             WalkMode::Default => {}
             WalkMode::Alphabetical => {
-                tr_files.sort_by(|a, b| a.path.cmp(&b.path));
+                tr_files.sort_by(|a, b| a.path().cmp(b.path()));
             }
             WalkMode::BreadthFirstAlphabetical => {
                 tr_files.sort_by(|a, b| {
-                    a.path
+                    a.path()
                         .iter()
-                        .zip(b.path.iter())
+                        .zip(b.path().iter())
                         .find_map(|(seg_a, seg_b)| {
                             let cmp_res = compare_ignore_case(seg_a, seg_b);
                             (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
                         })
-                        .unwrap_or_else(|| a.path.len().cmp(&b.path.len()))
+                        .unwrap_or_else(|| a.path().len().cmp(&b.path().len()))
                 });
             }
             WalkMode::BreadthFirstLevel => {
                 tr_files.sort_by(|a, b| {
-                    a.path
+                    a.path()
                         .iter()
-                        .zip(b.path.iter())
+                        .zip(b.path().iter())
                         .enumerate()
                         .find_map(|(depth, (seg_a, seg_b))| {
-                            match (depth == a.path.len() - 1, depth == b.path.len() - 1) {
+                            match (depth == a.path().len() - 1, depth == b.path().len() - 1) {
                                 (true, false) => Some(cmp::Ordering::Less),
                                 (false, true) => Some(cmp::Ordering::Greater),
                                 _ => {
@@ -213,11 +221,11 @@ impl TrInfo {
                                 }
                             }
                         })
-                        .unwrap_or_else(|| a.path.len().cmp(&b.path.len()))
+                        .unwrap_or_else(|| a.path().len().cmp(&b.path().len()))
                 });
             }
             WalkMode::FileSize => {
-                tr_files.sort_by_key(|file| cmp::Reverse(file.length));
+                tr_files.sort_by_key(|file| cmp::Reverse(file.length()));
             }
         }
 
@@ -229,19 +237,125 @@ impl TrInfo {
             progress,
         )?;
 
-        Ok(TrInfo {
-            files: if !single_file { Some(tr_files) } else { None },
-            length: if single_file {
+        TrInfo::from_parts(
+            if single_file { None } else { Some(tr_files) },
+            if single_file {
                 Some(base_metadata.len() as usize)
             } else {
                 None
             },
-            name: Some(name.to_string()),
-            piece_length: tr_config.piece_length,
+            Some(name.to_string()),
+            tr_config.piece_length,
             pieces,
-            private: tr_config.private,
-            source: tr_config.source.clone(),
+            tr_config.private,
+            tr_config.source.clone(),
+        )
+    }
+
+    /// Builds a validated `TrInfo` from parsed or externally supplied fields.
+    ///
+    /// Validates the name and file paths, the `files`/`length` invariant, the
+    /// piece length, and that the piece data matches the file sizes.
+    pub fn from_parts(
+        files: Option<Vec<TrFile>>,
+        length: Option<usize>,
+        name: Option<String>,
+        piece_length: usize,
+        pieces: Vec<u8>,
+        private: bool,
+        source: Option<String>,
+    ) -> TrResult<Self> {
+        if piece_length == 0 {
+            return Err(TrError::InvalidTorrent(String::from(
+                "piece length must be greater than zero",
+            )));
+        }
+
+        let name = name.ok_or_else(|| TrError::MissingField(String::from("name")))?;
+        if !is_safe_path_segment(&name) {
+            return Err(TrError::InvalidTorrent(format!(
+                "invalid torrent name: {name}"
+            )));
+        }
+
+        if files.is_some() == length.is_some() {
+            return Err(TrError::InvalidTorrent(String::from(
+                "torrent must contain exactly one of files or length",
+            )));
+        }
+
+        if let Some(files) = &files {
+            for file in files {
+                let path = file.path();
+                if path.is_empty() || !path.iter().all(|segment| is_safe_path_segment(segment)) {
+                    return Err(TrError::InvalidTorrent(format!(
+                        "invalid file path: {}",
+                        path.join("/")
+                    )));
+                }
+            }
+        }
+
+        if !pieces.len().is_multiple_of(SHA1_HASH_SIZE) {
+            return Err(TrError::InvalidTorrent(String::from(
+                "pieces length is not a multiple of the SHA-1 hash size",
+            )));
+        }
+
+        let total_length = if let Some(files) = &files {
+            files
+                .iter()
+                .try_fold(0usize, |total, file| total.checked_add(file.length()))
+                .ok_or_else(|| TrError::InvalidTorrent(String::from("total file size overflow")))?
+        } else {
+            length.unwrap_or_default()
+        };
+
+        let expected_piece_count = total_length.div_ceil(piece_length);
+        let found_piece_count = pieces.len() / SHA1_HASH_SIZE;
+        if found_piece_count != expected_piece_count {
+            return Err(TrError::InvalidTorrent(format!(
+                "piece count mismatch: expected {expected_piece_count}, found {found_piece_count}"
+            )));
+        }
+
+        Ok(Self {
+            files,
+            length,
+            name: Some(name),
+            piece_length,
+            pieces,
+            private,
+            source,
         })
+    }
+
+    pub fn files(&self) -> Option<&[TrFile]> {
+        self.files.as_deref()
+    }
+
+    pub fn length(&self) -> Option<usize> {
+        self.length
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub fn piece_length(&self) -> usize {
+        self.piece_length
+    }
+
+    pub fn pieces(&self) -> &[u8] {
+        &self.pieces
+    }
+
+    pub fn is_private(&self) -> bool {
+        self.private
+    }
+
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     pub fn verify(
@@ -271,12 +385,11 @@ impl TrInfo {
         let tr_files: &[TrFile] = match &self.files {
             Some(files) => files,
             None => {
-                single_file = vec![TrFile {
-                    length: self
-                        .length
+                single_file = vec![TrFile::new(
+                    self.length
                         .ok_or_else(|| TrError::MissingField(String::from("length")))?,
-                    path: Vec::new(),
-                }];
+                    Vec::new(),
+                )];
                 &single_file
             }
         };
@@ -284,7 +397,7 @@ impl TrInfo {
         let piece_slices: Vec<[u8; SHA1_HASH_SIZE]> = split_hash_pieces(&self.pieces);
         let expected_piece_count = tr_files
             .iter()
-            .try_fold(0usize, |total, file| total.checked_add(file.length))
+            .try_fold(0usize, |total, file| total.checked_add(file.length()))
             .ok_or_else(|| TrError::InvalidTorrent(String::from("total file size overflow")))?
             .div_ceil(self.piece_length);
         if piece_slices.len() != expected_piece_count {
@@ -313,17 +426,17 @@ impl TrInfo {
             .into_iter()
             .map(|file_index| {
                 let tr_file = &tr_files[file_index];
-                let path = if tr_file.path.is_empty() {
+                let path = if tr_file.path().is_empty() {
                     self.name
                         .clone()
                         .ok_or_else(|| TrError::MissingField(String::from("name")))?
                 } else {
-                    tr_file.path.join("/")
+                    tr_file.path().join("/")
                 };
                 Ok(FailedFile {
                     index: file_index,
                     path,
-                    length: tr_file.length,
+                    length: tr_file.length(),
                     missing_or_size_mismatch: failed_info.files_known.contains(&file_index),
                 })
             })
@@ -338,8 +451,8 @@ impl TrInfo {
     }
 
     pub fn get_name(&self) -> TrResult<String> {
-        self.name
-            .clone()
+        self.name()
+            .map(str::to_owned)
             .ok_or_else(|| TrError::MissingField(String::from("name")))
     }
 
@@ -448,7 +561,7 @@ fn verify_tr_files(
                 Entry::Vacant(entry) => {
                     let file_ok = metadata(entry.key())
                         .ok()
-                        .is_some_and(|meta| meta.len() == tr_file.length as u64);
+                        .is_some_and(|meta| meta.len() == tr_file.length() as u64);
                     if !file_ok {
                         failed_info.files_known.insert(file_hash_info.file_index);
                         files_ok = false;
@@ -519,14 +632,14 @@ fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; SHA1_HASH_SIZE]> {
 }
 
 fn calc_piece_file_info(tr_files: &[TrFile], piece_length: usize) -> Vec<Vec<FileHashInfo>> {
-    let total_size: usize = tr_files.iter().map(|f| f.length).sum();
+    let total_size: usize = tr_files.iter().map(|f| f.length()).sum();
     let pieces_count = total_size.div_ceil(piece_length);
 
     let mut piece_file_info: Vec<Vec<FileHashInfo>> = Vec::with_capacity(pieces_count);
     let mut unfilled_size = 0usize;
 
     for (file_index, tr_file) in tr_files.iter().enumerate() {
-        let mut rest_size = tr_file.length;
+        let mut rest_size = tr_file.length();
         let mut file_offset = 0usize;
         while rest_size > 0 {
             if unfilled_size == 0 {

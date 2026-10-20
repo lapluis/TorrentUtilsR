@@ -146,7 +146,9 @@ impl Torrent {
                         .map_err(|_| "invalid utf8 length")?;
                     let len = len_str.parse::<usize>().map_err(|_| "bad string length")?;
                     *pos += 1;
-                    let end = *pos + len;
+                    let end = (*pos).checked_add(len).ok_or_else(|| {
+                        TrError::InvalidTorrent(String::from("string length overflow"))
+                    })?;
                     if end > data.len() {
                         return Err(TrError::InvalidTorrent(String::from("truncated string")));
                     }
@@ -160,6 +162,11 @@ impl Torrent {
         }
 
         let root = parse_bencode(bcode, &mut pos)?;
+        if pos != bcode.len() {
+            return Err(TrError::InvalidTorrent(String::from(
+                "trailing data after torrent",
+            )));
+        }
         let tr_dict = match root {
             Bencode::Dict(m) => m,
             _ => {
@@ -180,70 +187,80 @@ impl Torrent {
             Some(Bencode::List(files)) => {
                 let mut out = Vec::new();
                 for file in files {
-                    if let Bencode::Dict(m) = file {
-                        let length = match m.get("length") {
-                            Some(Bencode::Int(i)) => *i,
-                            _ => {
-                                return Err(TrError::InvalidTorrent(String::from(
-                                    "file length invalid",
-                                )));
+                    let Bencode::Dict(m) = file else {
+                        return Err(TrError::InvalidTorrent(String::from(
+                            "files entry is not a dictionary",
+                        )));
+                    };
+                    let length = match m.get("length") {
+                        Some(Bencode::Int(i)) => *i,
+                        _ => {
+                            return Err(TrError::InvalidTorrent(String::from(
+                                "file length invalid",
+                            )));
+                        }
+                    };
+                    let path = match m.get("path") {
+                        Some(Bencode::List(parts)) => {
+                            let mut ps = Vec::new();
+                            for part in parts {
+                                let Bencode::Bytes(b) = part else {
+                                    return Err(TrError::InvalidTorrent(String::from(
+                                        "file path component is not a string",
+                                    )));
+                                };
+                                ps.push(String::from_utf8(b.to_vec())?);
                             }
-                        };
-                        let path = match m.get("path") {
-                            Some(Bencode::List(parts)) => {
-                                let mut ps = Vec::new();
-                                for part in parts {
-                                    if let Bencode::Bytes(b) = part {
-                                        ps.push(String::from_utf8(b.to_vec())?);
-                                    }
-                                }
-                                ps
-                            }
-                            _ => {
-                                return Err(TrError::InvalidTorrent(String::from(
-                                    "file path invalid",
-                                )));
-                            }
-                        };
-                        out.push(TrFile { length, path });
-                    }
+                            ps
+                        }
+                        _ => {
+                            return Err(TrError::InvalidTorrent(String::from("file path invalid")));
+                        }
+                    };
+                    out.push(TrFile::new(length, path));
                 }
                 Some(out)
             }
             _ => None,
         };
 
-        let tr_info = TrInfo {
-            files: tr_files,
-            length: match info_dict.get("length") {
-                Some(Bencode::Int(i)) => Some(*i),
-                _ => None,
-            },
-            name: match info_dict.get("name") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
-            piece_length: match info_dict.get("piece length") {
-                Some(Bencode::Int(i)) => *i,
-                _ => {
-                    return Err(TrError::InvalidTorrent(String::from(
-                        "piece length missing",
-                    )));
-                }
-            },
-            pieces: match info_dict.get("pieces") {
-                Some(Bencode::Bytes(b)) => b.to_vec(),
-                _ => return Err(TrError::InvalidTorrent(String::from("pieces missing"))),
-            },
-            private: match info_dict.get("private") {
-                Some(Bencode::Int(i)) => *i != 0,
-                _ => false,
-            },
-            source: match info_dict.get("source") {
-                Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
-                _ => None,
-            },
+        let length = match info_dict.get("length") {
+            Some(Bencode::Int(i)) => Some(*i),
+            _ => None,
         };
+        let name = match info_dict.get("name") {
+            Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+            _ => None,
+        };
+        let piece_length = match info_dict.get("piece length") {
+            Some(Bencode::Int(i)) => *i,
+            _ => {
+                return Err(TrError::InvalidTorrent(String::from(
+                    "piece length missing",
+                )));
+            }
+        };
+        let pieces = match info_dict.get("pieces") {
+            Some(Bencode::Bytes(b)) => b.to_vec(),
+            _ => return Err(TrError::InvalidTorrent(String::from("pieces missing"))),
+        };
+        let private = match info_dict.get("private") {
+            Some(Bencode::Int(i)) => *i != 0,
+            _ => false,
+        };
+        let source = match info_dict.get("source") {
+            Some(Bencode::Bytes(b)) => Some(String::from_utf8(b.to_vec())?),
+            _ => None,
+        };
+        let tr_info = TrInfo::from_parts(
+            tr_files,
+            length,
+            name,
+            piece_length,
+            pieces,
+            private,
+            source,
+        )?;
 
         Ok(Torrent {
             announce: match tr_dict.get("announce") {

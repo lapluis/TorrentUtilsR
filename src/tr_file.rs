@@ -4,11 +4,24 @@ use crate::bencode::{bencode_string, bencode_string_list, bencode_uint};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrFile {
-    pub length: usize,
-    pub path: Vec<String>,
+    length: usize,
+    path: Vec<String>,
 }
 
 impl TrFile {
+    /// Creates a file entry. Path safety is validated by [`crate::TrInfo::from_parts`].
+    pub fn new(length: usize, path: Vec<String>) -> Self {
+        Self { length, path }
+    }
+
+    pub fn length(&self) -> usize {
+        self.length
+    }
+
+    pub fn path(&self) -> &[String] {
+        &self.path
+    }
+
     fn bencode(&self) -> Vec<u8> {
         let mut bcode: Vec<u8> = Vec::new();
         bcode.push(b'd');

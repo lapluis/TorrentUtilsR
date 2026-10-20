@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use torrent_utils::{
-    CreateOptions, ProgressReporter, Torrent, TrError, TrInfo, VerificationOptions, WalkMode,
+    CreateOptions, ProgressReporter, Torrent, TrError, TrFile, TrInfo, VerificationOptions,
+    WalkMode,
 };
 
 struct TestDir(PathBuf);
@@ -129,9 +130,12 @@ fn verifies_multi_file_hash_and_metadata_failures() {
         .create_torrent(&target, &create_options(4), None)
         .expect("create multi-file torrent");
     let info = torrent.get_info().expect("torrent has info");
-    let files = info.files.as_ref().expect("multi-file torrent has files");
-    assert_eq!(files[0].path, ["a.bin"]);
-    assert_eq!(files[1].path, ["nested", "b.bin"]);
+    let files = info.files().expect("multi-file torrent has files");
+    assert_eq!(files[0].path(), ["a.bin"].map(String::from).as_slice());
+    assert_eq!(
+        files[1].path(),
+        ["nested", "b.bin"].map(String::from).as_slice()
+    );
 
     let report = info
         .verify(&target, &VerificationOptions { n_jobs: 2 }, None)
@@ -182,11 +186,11 @@ fn chunked_hashing_preserves_cross_file_piece_hashes() {
         multi_file_torrent
             .get_info()
             .expect("multi-file torrent has info")
-            .pieces,
+            .pieces(),
         single_file_torrent
             .get_info()
             .expect("single-file torrent has info")
-            .pieces
+            .pieces()
     );
 }
 
@@ -247,18 +251,68 @@ fn rejects_invalid_options_and_inconsistent_piece_data() {
         .expect_err("zero jobs must fail");
     assert!(matches!(error, TrError::InvalidConfig(_)));
 
-    let invalid_info = TrInfo {
-        files: None,
-        length: Some(3),
-        name: Some(String::from("payload.bin")),
-        piece_length: 2,
-        pieces: Vec::new(),
-        private: false,
-        source: None,
-    };
-    let error = invalid_info
-        .verify(&target, &VerificationOptions::default(), None)
-        .expect_err("piece count mismatch must fail");
+    let error = TrInfo::from_parts(
+        None,
+        Some(3),
+        Some(String::from("payload.bin")),
+        2,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("piece count mismatch must fail");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(
+        Some(vec![TrFile::new(1, vec![String::from("..")])]),
+        None,
+        Some(String::from("payload")),
+        1,
+        vec![0; 20],
+        false,
+        None,
+    )
+    .expect_err("path traversal must fail");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(
+        Some(Vec::new()),
+        Some(0),
+        Some(String::from("payload")),
+        1,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("files and length are mutually exclusive");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(None, Some(0), None, 1, Vec::new(), false, None)
+        .expect_err("name must be present");
+    assert!(matches!(error, TrError::MissingField(_)));
+
+    let error = TrInfo::from_parts(
+        None,
+        Some(0),
+        Some(String::from("payload")),
+        0,
+        Vec::new(),
+        false,
+        None,
+    )
+    .expect_err("zero piece length must fail");
+    assert!(matches!(error, TrError::InvalidTorrent(_)));
+
+    let error = TrInfo::from_parts(
+        None,
+        Some(0),
+        Some(String::from("payload")),
+        1,
+        vec![0; 19],
+        false,
+        None,
+    )
+    .expect_err("partial piece hash must fail");
     assert!(matches!(error, TrError::InvalidTorrent(_)));
 }
 
@@ -269,6 +323,12 @@ fn parser_rejects_malformed_data() {
         &b"le"[..],
         &b"d4:infoe"[..],
         &b"d4:infod6:lengthi1eee"[..],
+        &b"d4:infod6:lengthi0e4:name2:..12:piece lengthi1e6:pieces0:ee"[..],
+        &b"d4:infod5:filesld6:lengthi1e4:pathl2:..eee4:name4:test12:piece lengthi1e6:pieces20:....................ee"[..],
+        &b"d4:infod6:lengthi0e4:name4:test12:piece lengthi1e6:pieces0:eeX"[..],
+        &b"d4:infod5:filesld6:lengthi1e4:pathl5:ai1eee4:name4:test12:piece lengthi1e6:pieces20:....................ee"[..],
+        &b"d4:infod5:filesli1ee4:name4:test12:piece lengthi1e6:pieces0:ee"[..],
+        &b"18446744073709551615:x"[..],
     ] {
         assert!(Torrent::from_bytes(malformed).is_err());
     }

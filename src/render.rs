@@ -39,7 +39,7 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
         return lines;
     };
 
-    if let Some(name) = &info.name {
+    if let Some(name) = info.name() {
         lines.push(vec![
             StyledSpan::label("  Name:"),
             StyledSpan::plain(format!(" {name}")),
@@ -121,9 +121,9 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
 
     lines.push(vec![
         StyledSpan::label("  Private:"),
-        StyledSpan::plain(format!(" {}", info.private)),
+        StyledSpan::plain(format!(" {}", info.is_private())),
     ]);
-    if let Some(source) = &info.source {
+    if let Some(source) = info.source() {
         lines.push(vec![
             StyledSpan::label("  Source:"),
             StyledSpan::plain(format!(" {source}")),
@@ -134,23 +134,23 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
         StyledSpan::label("  Piece length:"),
         StyledSpan::plain(format!(
             " {} [{}]",
-            info.piece_length,
-            human_size(info.piece_length)
+            info.piece_length(),
+            human_size(info.piece_length())
         )),
     ]);
 
-    let total_length = if let Some(files) = &info.files {
-        files.iter().map(|f| f.length).sum()
+    let total_length = if let Some(files) = info.files() {
+        files.iter().map(|f| f.length()).sum()
     } else {
-        info.length.unwrap_or_default()
+        info.length().unwrap_or_default()
     };
     lines.push(vec![
         StyledSpan::label("  Length:"),
         StyledSpan::plain(format!(" {} [{}]", total_length, human_size(total_length))),
     ]);
 
-    let piece_count = if info.piece_length > 0 {
-        total_length.div_ceil(info.piece_length)
+    let piece_count = if info.piece_length() > 0 {
+        total_length.div_ceil(info.piece_length())
     } else {
         0
     };
@@ -159,7 +159,7 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
         StyledSpan::plain(format!(" {piece_count}")),
     ]);
 
-    if let Some(files) = &info.files {
+    if let Some(files) = info.files() {
         lines.push(vec![
             StyledSpan::label("  Files:"),
             StyledSpan::plain(format!("  {}", files.len())),
@@ -169,11 +169,11 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
         let mut truncated = false;
         for file in files {
             if shown < MAX_DISPLAYED_FILES {
-                let path_str = file.path.join("/");
+                let path_str = file.path().join("/");
                 lines.push(vec![StyledSpan::plain(format!(
                     "    - {path_str} [{} ({})]",
-                    file.length,
-                    human_size(file.length)
+                    file.length(),
+                    human_size(file.length())
                 ))]);
                 shown += 1;
             } else {
@@ -200,12 +200,12 @@ pub(crate) fn file_tree(torrent: &Torrent) -> String {
 fn write_file_tree(output: &mut impl Write, torrent: &Torrent) -> fmt::Result {
     match torrent.get_info() {
         Some(info) => {
-            if let Some(name) = &info.name {
+            if let Some(name) = info.name() {
                 writeln!(output, "{name}")?;
             }
-            if let Some(files) = &info.files {
+            if let Some(files) = info.files() {
                 write!(output, "{}", FileTree::build(files))?;
-            } else if let Some(length) = info.length {
+            } else if let Some(length) = info.length() {
                 writeln!(
                     output,
                     "  [Single file, {} ({})]",
@@ -268,7 +268,7 @@ impl FileTree {
     fn build(files: &[TrFile]) -> FileTree {
         let mut root = FileTree::new_dir("");
         for f in files {
-            root.insert_path(&f.path, f.length);
+            root.insert_path(f.path(), f.length());
         }
         root
     }
@@ -355,14 +355,8 @@ mod tests {
     #[test]
     fn file_tree_and_human_sizes_are_deterministic() {
         let files = vec![
-            TrFile {
-                length: 1024,
-                path: vec![String::from("dir"), String::from("b.bin")],
-            },
-            TrFile {
-                length: 3,
-                path: vec![String::from("a.txt")],
-            },
+            TrFile::new(1024, vec![String::from("dir"), String::from("b.bin")]),
+            TrFile::new(3, vec![String::from("a.txt")]),
         ];
 
         assert_eq!(human_size(0), "0 B");
