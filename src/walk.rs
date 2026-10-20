@@ -24,6 +24,24 @@ pub(crate) struct WalkedFiles {
     pub(crate) files: Vec<TrFile>,
 }
 
+fn compare_paths(a: &[String], b: &[String], level_first: bool) -> cmp::Ordering {
+    a.iter()
+        .zip(b.iter())
+        .enumerate()
+        .find_map(|(depth, (seg_a, seg_b))| {
+            if level_first {
+                match (depth + 1 == a.len(), depth + 1 == b.len()) {
+                    (true, false) => return Some(cmp::Ordering::Less),
+                    (false, true) => return Some(cmp::Ordering::Greater),
+                    _ => {}
+                }
+            }
+            let cmp_res = compare_ignore_case(seg_a, seg_b);
+            (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
+        })
+        .unwrap_or_else(|| a.len().cmp(&b.len()))
+}
+
 pub(crate) fn walk_target(target_path: &Path, walk_mode: WalkMode) -> TrResult<WalkedFiles> {
     let base_path = target_path;
     let name = base_path
@@ -80,35 +98,10 @@ pub(crate) fn walk_target(target_path: &Path, walk_mode: WalkMode) -> TrResult<W
             tr_files.sort_by(|a, b| a.path().cmp(b.path()));
         }
         WalkMode::BreadthFirstAlphabetical => {
-            tr_files.sort_by(|a, b| {
-                a.path()
-                    .iter()
-                    .zip(b.path().iter())
-                    .find_map(|(seg_a, seg_b)| {
-                        let cmp_res = compare_ignore_case(seg_a, seg_b);
-                        (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
-                    })
-                    .unwrap_or_else(|| a.path().len().cmp(&b.path().len()))
-            });
+            tr_files.sort_by(|a, b| compare_paths(a.path(), b.path(), false));
         }
         WalkMode::BreadthFirstLevel => {
-            tr_files.sort_by(|a, b| {
-                a.path()
-                    .iter()
-                    .zip(b.path().iter())
-                    .enumerate()
-                    .find_map(|(depth, (seg_a, seg_b))| {
-                        match (depth == a.path().len() - 1, depth == b.path().len() - 1) {
-                            (true, false) => Some(cmp::Ordering::Less),
-                            (false, true) => Some(cmp::Ordering::Greater),
-                            _ => {
-                                let cmp_res = compare_ignore_case(seg_a, seg_b);
-                                (cmp_res != cmp::Ordering::Equal).then_some(cmp_res)
-                            }
-                        }
-                    })
-                    .unwrap_or_else(|| a.path().len().cmp(&b.path().len()))
-            });
+            tr_files.sort_by(|a, b| compare_paths(a.path(), b.path(), true));
         }
         WalkMode::FileSize => {
             tr_files.sort_by_key(|file| cmp::Reverse(file.length()));
@@ -120,4 +113,48 @@ pub(crate) fn walk_target(target_path: &Path, walk_mode: WalkMode) -> TrResult<W
         single_file,
         files: tr_files,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(segments: &[&str]) -> Vec<String> {
+        segments
+            .iter()
+            .map(|segment| (*segment).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn breadth_first_alphabetical_compares_path_segments() {
+        assert_eq!(
+            compare_paths(&path(&["a", "z"]), &path(&["b"]), false),
+            cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_paths(&path(&["dir"]), &path(&["dir", "a"]), false),
+            cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn breadth_first_level_prioritizes_shallower_entries() {
+        assert_eq!(
+            compare_paths(&path(&["a", "z"]), &path(&["b"]), true),
+            cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_paths(&path(&["b"]), &path(&["a", "z"]), true),
+            cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_paths(&path(&["dir", "x"]), &path(&["dir", "sub", "y"]), true),
+            cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_paths(&path(&["dir", "a"]), &path(&["dir", "b"]), true),
+            cmp::Ordering::Less
+        );
+    }
 }
