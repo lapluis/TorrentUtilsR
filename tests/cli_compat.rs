@@ -57,6 +57,14 @@ fn run_with_env(args: &[String], env: &[(&str, &str)]) -> Output {
     command.output().expect("run TorrentUtilsR")
 }
 
+fn run_in_dir(args: &[String], cwd: &Path) -> Output {
+    Command::new(binary_path())
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("run TorrentUtilsR")
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).replace("\r\n", "\n")
 }
@@ -203,6 +211,34 @@ fn piped_output_does_not_emit_terminal_progress() {
     let stdout = text(&create.stdout);
     assert!(stdout.contains("Processed 2 pieces in "), "{stdout}");
     assert!(!stdout.contains('\x1b'), "{stdout}");
+}
+
+#[test]
+fn relative_output_with_forward_slashes_uses_working_directory() {
+    let test_dir = TestDir::new("relative_output");
+    let data_dir = test_dir.path().join("data");
+    let out_dir = test_dir.path().join("out");
+    fs::create_dir(&data_dir).expect("create data directory");
+    fs::create_dir(&out_dir).expect("create output directory");
+    fs::write(data_dir.join("payload.bin"), b"payload").expect("write payload");
+
+    let create = run_in_dir(
+        &[
+            String::from("data/payload.bin"),
+            String::from("-g"),
+            test_dir.missing_config(),
+            String::from("-o"),
+            String::from("out/payload.torrent"),
+            String::from("-l"),
+            String::from("14"),
+            String::from("-d"),
+            String::from("-q"),
+        ],
+        test_dir.path(),
+    );
+    assert!(create.status.success(), "{}", text(&create.stderr));
+    assert!(out_dir.join("payload.torrent").is_file());
+    assert!(!data_dir.join("out").exists());
 }
 
 #[test]

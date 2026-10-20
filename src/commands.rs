@@ -1,5 +1,5 @@
 use std::io::{Write, stdin, stdout};
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::Path;
 
 use chrono::Local;
 use torrent_utils::{
@@ -117,7 +117,10 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
                 return Err(CliError::error("Error: Output path must end with .torrent"));
             }
             let path_obj = Path::new(path);
-            if path_obj.is_absolute() || path.contains(MAIN_SEPARATOR) {
+            let has_directory = path_obj
+                .parent()
+                .is_some_and(|parent| !parent.as_os_str().is_empty());
+            if path_obj.is_absolute() || has_directory {
                 path.to_string()
             } else {
                 let target_path = Path::new(input);
