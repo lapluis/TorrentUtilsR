@@ -26,6 +26,32 @@ fn empty_torrent() -> Torrent {
 }
 
 #[test]
+fn reads_utf8_alternatives_to_legacy_names_and_paths() {
+    fn string(bytes: &[u8]) -> Vec<u8> {
+        let mut encoded = format!("{}:", bytes.len()).into_bytes();
+        encoded.extend_from_slice(bytes);
+        encoded
+    }
+
+    // GBK legacy fields are deliberately invalid as UTF-8. No top-level
+    // encoding declaration is needed when explicit UTF-8 fields are present.
+    let mut encoded = b"d4:infod5:filesld6:lengthi0e4:pathl".to_vec();
+    encoded.extend(string(b"\xd2\xf4\xc0\xd6.tak"));
+    encoded.extend_from_slice(b"e10:path.utf-8l");
+    encoded.extend(string("音楽.tak".as_bytes()));
+    encoded.extend_from_slice(b"eee4:name");
+    encoded.extend(string(b"\xd0\xc7\xbf\xd5"));
+    encoded.extend_from_slice(b"10:name.utf-8");
+    encoded.extend(string("星空".as_bytes()));
+    encoded.extend_from_slice(b"12:piece lengthi16384e6:pieces0:ee");
+
+    let torrent = Torrent::from_bytes(&encoded).expect("read legacy torrent with UTF-8 aliases");
+    let info = torrent.get_info().expect("torrent has info");
+    assert_eq!(info.name(), Some("星空"));
+    assert_eq!(info.files().unwrap()[0].path(), &[String::from("音楽.tak")]);
+}
+
+#[test]
 fn creates_round_trips_and_verifies_a_single_file() {
     let test_dir = TestDir::new("round_trip");
     let target = test_dir.path().join("payload.bin");
