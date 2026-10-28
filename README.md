@@ -83,7 +83,7 @@ Options:
   -s, --source      torrent source
   -w, --walk-mode   walk mode [default: 0]
   -f, --force       force overwrite
-  -j, --n-jobs      number of threads to use (only for verify mode) [default: 1]
+  -j, --n-jobs      number of threads to use for create and verify modes [default: 1]
   -q, --quiet       hide progress bar and other non-error output
   -t, --print-tree  print torrent file tree, only for info mode
   -e, --wait-exit   wait for Enter key before exiting
@@ -130,7 +130,7 @@ tracker_list = [
 
 - **`wait_exit`**: Boolean, wait for Enter key before exiting
 - **`confirm_overwrite`**: Boolean, ask before overwriting an existing torrent file (default: false). Enter `y` or `yes` to overwrite; any other response cancels creation. When disabled, an existing output file causes an error before torrent creation starts. `--force` bypasses the check
-- **`n_jobs`**: Integer, number of threads to use for verify mode (default: 1)
+- **`n_jobs`**: Integer, number of threads to use for create and verify modes (default: 1). The `-j, --n-jobs` command-line option overrides this value; the effective count is clamped to between 1 and the system's available parallelism
 - **`walk_mode`**: Integer (0-4), default file walking mode for directories
 - **`private`**: Boolean, creates private torrents by default
 - **`piece_size`**: Integer, piece size exponent (14-27), piece length will be 2^piece_size bytes
