@@ -106,7 +106,9 @@ impl Torrent {
                             )));
                         }
                     };
-                    let path = match m.get("path") {
+                    // Older clients may store local-encoding bytes in `path`
+                    // alongside an explicitly UTF-8 encoded alternative.
+                    let path = match m.get("path.utf-8").or_else(|| m.get("path")) {
                         Some(Value::List(parts)) => {
                             let mut ps = Vec::new();
                             for part in parts {
@@ -131,7 +133,14 @@ impl Torrent {
         };
 
         let length = optional_int(info_dict, "length");
-        let name = optional_string(info_dict, "name")?;
+        let name = optional_string(
+            info_dict,
+            if info_dict.contains_key("name.utf-8") {
+                "name.utf-8"
+            } else {
+                "name"
+            },
+        )?;
         let piece_length = match info_dict.get("piece length") {
             Some(Value::Int(i)) => *i,
             _ => {

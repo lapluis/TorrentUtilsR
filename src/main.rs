@@ -115,7 +115,7 @@ struct Args {
     #[argh(switch, short = 'f')]
     force: bool,
 
-    /// number of threads to use (only for verify mode) [default: 1]
+    /// number of threads to use for create and verify modes [default: 1]
     #[argh(option, short = 'j')]
     n_jobs: Option<usize>,
 
