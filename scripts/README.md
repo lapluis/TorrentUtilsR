@@ -90,3 +90,33 @@ indices), and `FailedFiles` (including reasons). Failed verification throws afte
 reporting, so `pwsh -File` exits nonzero. When collecting failed reports in a script,
 consume pipeline output inside `try`, then handle the terminating error in `catch`.
 Success exits zero. Keep content unchanged while verification is running.
+
+## Remote invocation
+
+In PowerShell 7+, fetch and execute the script in memory without saving a local
+`.ps1` file:
+
+```powershell
+irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1' | iex
+```
+
+`irm` is an alias for `Invoke-RestMethod`; `iex` is an alias for
+`Invoke-Expression`. This command runs the script from the `main` branch.
+It prompts for the required `Path`: enter a file or directory to create a torrent,
+or an existing `.torrent` file to display its information. Creation uses the
+default settings, including one hashing worker. Generated `.torrent` files are
+still saved to disk.
+
+To supply script parameters in a single command with `irm` and `iex`, wrap the
+fetched content in an invoked script block. For example, create a torrent with
+four hashing workers:
+
+```powershell
+iex "& {`n$(irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1')`n} -Path 'D:\Downloads\Series' -Threads 4"
+```
+
+Or display a torrent's file tree:
+
+```powershell
+iex "& {`n$(irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1')`n} -Path 'D:\Torrents\Series.torrent' -PrintTree"
+```
