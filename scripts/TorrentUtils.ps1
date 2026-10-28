@@ -8,6 +8,8 @@ Creates, reads, and verifies BitTorrent v1 torrents using PowerShell and .NET.
 ./TorrentUtils.ps1 'D:\Downloads\Series.torrent' 'D:\Downloads\Series'
 .EXAMPLE
 ./TorrentUtils.ps1 'D:\Downloads\Series.torrent' -PrintTree
+.EXAMPLE
+./TorrentUtils.ps1 'D:\Downloads\Series' -Threads 4
 .NOTES
 PieceSize is an exponent: 22 means 4 MiB. Directory files are ordered by
 ordinal relative path. Links and reparse points are rejected. Output must be
@@ -17,6 +19,8 @@ TargetPath is the actual content file or directory, not its parent directory.
 Info and Verify support -PassThru for structured objects. Verification failure
 emits its report before throwing, giving pwsh -File a nonzero exit status.
 Only v1 and UTF-8 metadata are supported. Indices in FailedPieces are zero-based.
+Create supports -Threads 1..64 (default 1). Parallel hashing uses PowerShell
+runspaces with one piece buffer per worker and preserves the single-thread order.
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +40,9 @@ param(
     [string] $Comment,
     [string] $Source,
     [switch] $NoDate,
-    [switch] $Force
+    [switch] $Force,
+    [ValidateRange(1, 64)]
+    [int] $Threads = 1
 )
 
 Set-StrictMode -Version Latest
@@ -73,6 +79,132 @@ function Write-Bencode {
         $Stream.Write($bytes, 0, $bytes.Length)
     } else {
         throw "Unsupported Bencode value type: $($Value.GetType().FullName)"
+    }
+}
+
+function Invoke-ParallelCreationHash {
+    param([string[]] $Paths, [long[]] $Lengths, [DateTime[]] $WriteTimes,
+        [int] $PieceLength, [long] $TotalBytes, [int] $Threads)
+    # Partition the logical byte stream at piece boundaries. Each worker reads a
+    # contiguous range, reusing file handles and carrying partial pieces across files.
+    $workerCode = {
+        param([string[]] $Paths, [long[]] $Lengths, [DateTime[]] $WriteTimes,
+            [int] $PieceLength, [long] $StartPiece, [long] $EndPiece,
+            [long] $TotalBytes, [int] $WorkerIndex, $ProgressBytes)
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        $buffer = [byte[]]::new($PieceLength)
+        $pieces = [IO.MemoryStream]::new()
+        $sha1 = [Security.Cryptography.SHA1]::Create()
+        [long] $startByte = $StartPiece * $PieceLength
+        [long] $endByte = [Math]::Min($TotalBytes, $EndPiece * $PieceLength)
+        [long] $fileOffset = 0
+        [long] $processed = 0
+        $filled = 0
+        try {
+            for ($index = 0; $index -lt $Paths.Length; $index++) {
+                [long] $fileEnd = $fileOffset + $Lengths[$index]
+                if ($fileOffset -ge $endByte) { break }
+                if ($fileEnd -gt $startByte -and $Lengths[$index] -gt 0) {
+                    [long] $readStart = [Math]::Max($startByte, $fileOffset) - $fileOffset
+                    [long] $remaining = [Math]::Min($endByte, $fileEnd) - $fileOffset - $readStart
+                    $stream = [IO.File]::Open($Paths[$index], [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                    try {
+                        if ($stream.Length -ne $Lengths[$index]) { throw "Source changed: $($Paths[$index])" }
+                        if ($readStart) { [void] $stream.Seek($readStart, [IO.SeekOrigin]::Begin) }
+                        while ($remaining -gt 0) {
+                            $wanted = [int] [Math]::Min($remaining, $PieceLength - $filled)
+                            $count = $stream.Read($buffer, $filled, $wanted)
+                            if (!$count) { throw "Source ended before declared length: $($Paths[$index])" }
+                            $remaining -= $count
+                            $filled += $count
+                            $processed += $count
+                            if ($filled -eq $PieceLength) {
+                                $hash = $sha1.ComputeHash($buffer, 0, $filled)
+                                $pieces.Write($hash, 0, $hash.Length)
+                                $filled = 0
+                                if ($null -ne $ProgressBytes) { $ProgressBytes[$WorkerIndex] = $processed }
+                            }
+                        }
+                        if ([IO.File]::GetLastWriteTimeUtc($Paths[$index]) -ne $WriteTimes[$index]) {
+                            throw "Source changed while hashing: $($Paths[$index])"
+                        }
+                    } finally { $stream.Dispose() }
+                }
+                $fileOffset = $fileEnd
+            }
+            if ($processed -ne $endByte - $startByte) { throw 'Incomplete worker byte range.' }
+            if ($filled -gt 0) {
+                $hash = $sha1.ComputeHash($buffer, 0, $filled)
+                $pieces.Write($hash, 0, $hash.Length)
+            }
+            if ($null -ne $ProgressBytes) { $ProgressBytes[$WorkerIndex] = $processed }
+            # One object per worker; binary hashes must not be enumerated into the pipeline.
+            [pscustomobject] @{ StartPiece = $StartPiece; Pieces = $pieces.ToArray() }
+        } finally {
+            $sha1.Dispose()
+            $pieces.Dispose()
+        }
+    }
+    [long] $pieceCount = [long] [decimal]::Ceiling([decimal] $TotalBytes / $PieceLength)
+    if (!$pieceCount) { return ,([byte[]]::new(0)) }
+    $workerCount = [int] [Math]::Min($Threads, $pieceCount)
+    [long] $piecesPerWorker = [long] [decimal]::Ceiling([decimal] $pieceCount / $workerCount)
+    $progressBytes = $null
+    if ($ProgressPreference -ne 'SilentlyContinue' -and $ProgressPreference -ne 'Ignore') {
+        $progressBytes = [Collections.Concurrent.ConcurrentDictionary[int, long]]::new()
+    }
+    $pool = [RunspaceFactory]::CreateRunspacePool(1, $workerCount)
+    $jobs = [Collections.Generic.List[object]]::new()
+    try {
+        $pool.Open()
+        for ($worker = 0; $worker -lt $workerCount; $worker++) {
+            [long] $startPiece = $worker * $piecesPerWorker
+            [long] $endPiece = [Math]::Min($pieceCount, $startPiece + $piecesPerWorker)
+            if ($startPiece -ge $endPiece) { break }
+            $pipeline = [PowerShell]::Create()
+            $pipeline.RunspacePool = $pool
+            $job = [pscustomobject] @{ Pipeline = $pipeline; Handle = $null; Done = $false }
+            $jobs.Add($job)
+            [void] $pipeline.AddScript($workerCode.ToString()).AddArgument($Paths).AddArgument($Lengths).
+                AddArgument($WriteTimes).AddArgument($PieceLength).AddArgument($startPiece).AddArgument($endPiece).
+                AddArgument($TotalBytes).AddArgument($worker).AddArgument($progressBytes)
+            $job.Handle = $pipeline.BeginInvoke()
+        }
+        $pieces = [IO.MemoryStream]::new()
+        try {
+            $pieces.SetLength($pieceCount * 20)
+            $remainingJobs = $jobs.Count
+            while ($remainingJobs) {
+                foreach ($job in $jobs) {
+                    if (!$job.Done -and $job.Handle.IsCompleted) {
+                        $output = $job.Pipeline.EndInvoke($job.Handle)
+                        if ($job.Pipeline.HadErrors) { throw ($job.Pipeline.Streams.Error | Out-String) }
+                        if ($output.Count -ne 1) { throw 'Unexpected parallel hash result.' }
+                        $result = $output[0]
+                        $pieces.Position = $result.StartPiece * 20
+                        $pieces.Write($result.Pieces, 0, $result.Pieces.Length)
+                        $job.Done = $true
+                        $remainingJobs--
+                    }
+                }
+                if ($null -ne $progressBytes) {
+                    [long] $doneBytes = 0
+                    foreach ($value in $progressBytes.Values) { $doneBytes += $value }
+                    Write-Progress -Activity 'Creating torrent' -Status "$doneBytes / $TotalBytes bytes ($workerCount workers)" `
+                        -PercentComplete ([Math]::Min(100, 100.0 * $doneBytes / $TotalBytes))
+                }
+                if ($remainingJobs) { Start-Sleep -Milliseconds 100 }
+            }
+            return ,$pieces.ToArray()
+        } finally { $pieces.Dispose() }
+    } finally {
+        foreach ($job in $jobs) {
+            try { if ($null -ne $job.Handle -and !$job.Handle.IsCompleted) { $job.Pipeline.Stop() } }
+            catch { Write-Verbose "Worker cleanup: $_" }
+            finally { $job.Pipeline.Dispose() }
+        }
+        $pool.Dispose()
     }
 }
 
@@ -389,7 +521,7 @@ if ($Mode -eq 'Auto') {
 }
 if ($TargetPath -and $Mode -ne 'Verify') { throw 'A second path is only supported in Verify mode.' }
 if ($Mode -ne 'Create') {
-    foreach ($parameterName in @('Output', 'PieceSize', 'Announce', 'Private', 'Comment', 'Source', 'NoDate', 'Force')) {
+    foreach ($parameterName in @('Output', 'PieceSize', 'Announce', 'Private', 'Comment', 'Source', 'NoDate', 'Force', 'Threads')) {
         if ($PSBoundParameters.ContainsKey($parameterName)) { throw "-$parameterName is only supported in Create mode." }
     }
     if ($Mode -eq 'Verify' -and [IO.Path]::GetExtension($TargetPath) -ieq '.torrent' -and
@@ -468,50 +600,76 @@ if (!$fileMap.Count) { throw 'The source directory contains no files.' }
 foreach ($relative in $relativePaths) { $totalBytes += $fileMap[$relative].Length }
 
 $pieceLength = 1 -shl $PieceSize
-$buffer = [byte[]]::new($pieceLength)
+$buffer = $null
+if ($Threads -eq 1) { $buffer = [byte[]]::new($pieceLength) }
 $pieces = [IO.MemoryStream]::new()
 $sha1 = [Security.Cryptography.SHA1]::Create()
 $infoBytes = [IO.MemoryStream]::new()
 $tempPath = $null
 try {
-    $filled = 0
-    [long] $processed = 0
-    $fileMetadata = [Collections.Generic.List[object]]::new()
-    foreach ($relative in $relativePaths) {
-        $file = $fileMap[$relative]
-        [long] $expectedLength = $file.Length
-        $expectedWriteTime = $file.LastWriteTimeUtc
-        # FileShare.Read prevents writes/deletions while this file is open on Windows.
-        $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-        try {
-            if ($stream.Length -ne $expectedLength) { throw "Source changed: $relative" }
-            [long] $readLength = 0
-            while (($count = $stream.Read($buffer, $filled, $pieceLength - $filled)) -gt 0) {
-                $filled += $count
-                $processed += $count
-                $readLength += $count
-                if ($filled -eq $pieceLength) {
-                    $hash = $sha1.ComputeHash($buffer, 0, $filled)
-                    $pieces.Write($hash, 0, $hash.Length)
-                    $filled = 0
+    if ($Threads -eq 1) {
+        $filled = 0
+        [long] $processed = 0
+        $fileMetadata = [Collections.Generic.List[object]]::new()
+        foreach ($relative in $relativePaths) {
+            $file = $fileMap[$relative]
+            [long] $expectedLength = $file.Length
+            $expectedWriteTime = $file.LastWriteTimeUtc
+            # FileShare.Read prevents writes/deletions while this file is open on Windows.
+            $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try {
+                if ($stream.Length -ne $expectedLength) { throw "Source changed: $relative" }
+                [long] $readLength = 0
+                while (($count = $stream.Read($buffer, $filled, $pieceLength - $filled)) -gt 0) {
+                    $filled += $count
+                    $processed += $count
+                    $readLength += $count
+                    if ($filled -eq $pieceLength) {
+                        $hash = $sha1.ComputeHash($buffer, 0, $filled)
+                        $pieces.Write($hash, 0, $hash.Length)
+                        $filled = 0
+                    }
+                    Write-Progress -Activity 'Creating torrent' -Status "$processed / $totalBytes bytes" `
+                        -PercentComplete $(if ($totalBytes) { [Math]::Min(100, 100.0 * $processed / $totalBytes) } else { 100 })
                 }
-                Write-Progress -Activity 'Creating torrent' -Status "$processed / $totalBytes bytes" `
-                    -PercentComplete $(if ($totalBytes) { [Math]::Min(100, 100.0 * $processed / $totalBytes) } else { 100 })
-            }
+                $file.Refresh()
+                if ($readLength -ne $expectedLength -or $file.LastWriteTimeUtc -ne $expectedWriteTime) {
+                    throw "Source changed while hashing: $relative"
+                }
+            } finally { $stream.Dispose() }
+            $fileMetadata.Add(@{
+                length = $expectedLength
+                path = [string[]] $relative.Split([IO.Path]::DirectorySeparatorChar)
+            })
+        }
+        # A partial piece continues across file boundaries; empty content has no pieces.
+        if ($filled -gt 0) {
+            $hash = $sha1.ComputeHash($buffer, 0, $filled)
+            $pieces.Write($hash, 0, $hash.Length)
+        }
+    } else {
+        $orderedPaths = [Collections.Generic.List[string]]::new()
+        $lengths = [Collections.Generic.List[long]]::new()
+        $writeTimes = [Collections.Generic.List[DateTime]]::new()
+        $fileMetadata = [Collections.Generic.List[object]]::new()
+        foreach ($relative in $relativePaths) {
+            $file = $fileMap[$relative]
+            $orderedPaths.Add($file.FullName)
+            $lengths.Add($file.Length)
+            $writeTimes.Add($file.LastWriteTimeUtc)
+            $fileMetadata.Add(@{ length = $file.Length; path = [string[]] $relative.Split([IO.Path]::DirectorySeparatorChar) })
+        }
+        $hashes = Invoke-ParallelCreationHash $orderedPaths.ToArray() $lengths.ToArray() $writeTimes.ToArray() $pieceLength $totalBytes $Threads
+        foreach ($relative in $relativePaths) {
+            $file = $fileMap[$relative]
+            $expectedLength = $file.Length
+            $expectedWriteTime = $file.LastWriteTimeUtc
             $file.Refresh()
-            if ($readLength -ne $expectedLength -or $file.LastWriteTimeUtc -ne $expectedWriteTime) {
+            if (!$file.Exists -or $file.Length -ne $expectedLength -or $file.LastWriteTimeUtc -ne $expectedWriteTime) {
                 throw "Source changed while hashing: $relative"
             }
-        } finally { $stream.Dispose() }
-        $fileMetadata.Add(@{
-            length = $expectedLength
-            path = [string[]] $relative.Split([IO.Path]::DirectorySeparatorChar)
-        })
-    }
-    # A partial piece continues across file boundaries; empty content has no pieces.
-    if ($filled -gt 0) {
-        $hash = $sha1.ComputeHash($buffer, 0, $filled)
-        $pieces.Write($hash, 0, $hash.Length)
+        }
+        $pieces.Write($hashes, 0, $hashes.Length)
     }
     $info = @{
         name = $inputItem.Name

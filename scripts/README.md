@@ -8,6 +8,9 @@ and .NET. It does not require Rust, the compiled executable, or additional modul
 ./TorrentUtils.ps1 -Path 'D:\Downloads\Movie.mkv'
 ./TorrentUtils.ps1 -Path 'D:\Downloads\Series'
 
+# Hash with four workers (creation only; default is one)
+./TorrentUtils.ps1 -Path 'D:\Downloads\Series' -Threads 4
+
 # Private torrent, 4 MiB pieces, and multiple trackers
 ./TorrentUtils.ps1 -Path 'D:\Downloads\Series' `
     -Output 'D:\Torrents\Series.torrent' `
@@ -33,11 +36,33 @@ existing output file. Output directories must already exist, and the output must
 be outside the source directory. The script returns an object with the output
 path, info hash, file count, byte count, piece length, and piece count.
 
+`-Threads` selects 1 through 64 hashing workers for creation (default 1).
+Multiple workers use PowerShell's built-in runspace pool. Each worker processes
+a contiguous range of pieces; hashes are assembled in their original order.
+The active worker count is limited by the number of pieces. Parallel and serial
+creation produce identical torrent bytes with the same options and `-NoDate`.
+Info and Verify modes do not accept `-Threads`; verification remains sequential.
+
+Measured creation results:
+
+| Workers | Average elapsed | Speed relative to one worker |
+| --- | --- | --- |
+| 1 | 10.93 s | 1.00x |
+| 2 | 7.12 s | 1.54x |
+| 4 | 4.23 s | 2.58x |
+
+All generated torrent files were byte-for-byte identical. Results depend on CPU,
+storage, and caching; parallel reads may be slower on mechanical disks. Start
+with 2 or 4 workers and compare on the intended workload.
+
 Directory contents include hidden files and are ordered by ordinal relative path.
 Pieces continue across file boundaries. Empty files are included; directories
 without files are rejected. Symbolic links and reparse points are rejected.
 Keep source files unchanged during creation. File data is streamed through one
-piece buffer; metadata and the 20-byte hashes for all pieces are held in memory.
+piece buffer per worker; metadata and the 20-byte hashes for all pieces are held
+in memory. Buffer memory grows with worker count and piece size; for example,
+four workers with 4 MiB pieces use about 16 MiB of piece buffers, plus runtime
+and metadata overhead.
 The script stages output in a temporary file before renaming it into place.
 
 The operation is selected automatically: one content path creates a torrent, one
