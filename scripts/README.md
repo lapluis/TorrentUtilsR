@@ -55,22 +55,32 @@ Verification reports passed/failed pieces and files. Missing, truncated, and ove
 
 ## Remote invocation
 
-In PowerShell 7+, fetch and execute the script in memory without saving a local `.ps1` file:
+In PowerShell 7+, the recommended approach is to fetch the script with `Invoke-RestMethod`, create a script block, and pass parameters using the call operator `&`. This runs the script from the `main` branch in memory without saving a local `.ps1` file. The following full and shorthand commands both create a torrent with four hashing workers.
+
+Full command:
 
 ```powershell
-irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1' | iex
+& ([System.Management.Automation.ScriptBlock]::Create((Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1'))) -Path 'D:\Downloads\Series' -Threads 4
 ```
 
-`irm` is an alias for `Invoke-RestMethod`; `iex` is an alias for `Invoke-Expression`. This command runs the script from the `main` branch. It prompts for the required `Path`: enter a file or directory to create a torrent, or an existing `.torrent` file to display its information. Creation uses the default settings, including one hashing worker. Generated `.torrent` files are still saved to disk.
-
-To supply script parameters in a single command with `irm` and `iex`, wrap the fetched content in an invoked script block. For example, create a torrent with four hashing workers:
+Shorthand command:
 
 ```powershell
-iex "& {`n$(irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1')`n} -Path 'D:\Downloads\Series' -Threads 4"
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1'))) -Path 'D:\Downloads\Series' -Threads 4
 ```
 
 Or display a torrent's file tree:
 
 ```powershell
-iex "& {`n$(irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1')`n} -Path 'D:\Torrents\Series.torrent' -PrintTree"
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1'))) -Path 'D:\Torrents\Series.torrent' -PrintTree
+```
+
+`irm` is an alias for `Invoke-RestMethod`. Generated `.torrent` files are still saved to disk.
+
+### Alternative: Invoke-Expression
+
+Alternatively, use `iex`, an alias for `Invoke-Expression`, with an invoked script block to supply parameters in one line:
+
+```powershell
+iex "& {`n$(irm 'https://raw.githubusercontent.com/lapluis/TorrentUtilsR/main/scripts/TorrentUtils.ps1')`n} -Path 'D:\Downloads\Series' -Threads 4"
 ```
