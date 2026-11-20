@@ -18,7 +18,7 @@ pub(crate) struct CliError {
 }
 
 impl CliError {
-    fn error(message: impl Into<String>) -> Self {
+    pub(crate) fn error(message: impl Into<String>) -> Self {
         Self {
             style: OutputStyle::Error,
             message: message.into(),

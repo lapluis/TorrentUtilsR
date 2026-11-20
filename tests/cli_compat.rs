@@ -438,3 +438,22 @@ fn trailing_slash_directory_creates_sibling_torrent() {
     assert!(test_dir.path().join("series.torrent").is_file());
     assert!(!payload.join(".torrent").exists());
 }
+
+#[test]
+fn malformed_config_file_returns_error() {
+    let test_dir = TestDir::new("malformed_config");
+    let payload = test_dir.path().join("payload.bin");
+    let config = test_dir.path().join("bad.toml");
+    fs::write(&payload, b"data").expect("write payload");
+    fs::write(&config, "piece_size = \"not-a-number\"\n").expect("write malformed config");
+
+    let create = run(&[
+        path_string(&payload),
+        String::from("-g"),
+        path_string(&config),
+        String::from("-q"),
+    ]);
+    assert_eq!(create.status.code(), Some(1));
+    let stderr = text(&create.stderr);
+    assert!(stderr.contains("Error parsing config file"), "{stderr}");
+}
