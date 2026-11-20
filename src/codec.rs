@@ -12,13 +12,14 @@ pub(crate) enum Value<'a> {
     Dict(HashMap<String, Value<'a>>),
 }
 
-pub(crate) fn decode(data: &[u8]) -> TrResult<Value<'_>> {
+pub(crate) fn decode_with_info_slice(data: &[u8]) -> TrResult<(Value<'_>, Option<&[u8]>)> {
     let mut pos = 0;
-    let value = parse(data, &mut pos, 0)?;
+    let mut info_slice = None;
+    let value = parse(data, &mut pos, 0, &mut info_slice)?;
     if pos != data.len() {
         return Err(BencodeError::TrailingData.into());
     }
-    Ok(value)
+    Ok((value, info_slice))
 }
 
 fn is_valid_bencode_digits(s: &str, allow_zero: bool) -> bool {
@@ -32,7 +33,12 @@ fn is_valid_bencode_digits(s: &str, allow_zero: bool) -> bool {
     }
 }
 
-fn parse<'a>(data: &'a [u8], pos: &mut usize, depth: usize) -> Result<Value<'a>, BencodeError> {
+fn parse<'a>(
+    data: &'a [u8],
+    pos: &mut usize,
+    depth: usize,
+    info_slice: &mut Option<&'a [u8]>,
+) -> Result<Value<'a>, BencodeError> {
     if depth > MAX_BENCODE_DEPTH {
         return Err(BencodeError::MaxDepthExceeded);
     }
@@ -72,7 +78,7 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize, depth: usize) -> Result<Value<'a>,
             *pos += 1;
             let mut items = Vec::new();
             while data.get(*pos) != Some(&b'e') {
-                items.push(parse(data, pos, depth + 1)?);
+                items.push(parse(data, pos, depth + 1, info_slice)?);
             }
             *pos += 1;
             Ok(Value::List(items))
@@ -81,12 +87,16 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize, depth: usize) -> Result<Value<'a>,
             *pos += 1;
             let mut map = HashMap::new();
             while data.get(*pos) != Some(&b'e') {
-                let key = match parse(data, pos, depth + 1)? {
+                let key = match parse(data, pos, depth + 1, info_slice)? {
                     Value::Bytes(b) => String::from_utf8(b.to_vec())
                         .map_err(|_| BencodeError::InvalidUtf8("dictionary key"))?,
                     _ => return Err(BencodeError::DictKeyNotString),
                 };
-                let val = parse(data, pos, depth + 1)?;
+                let val_start = *pos;
+                let val = parse(data, pos, depth + 1, info_slice)?;
+                if depth == 0 && key == "info" {
+                    *info_slice = Some(&data[val_start..*pos]);
+                }
                 map.insert(key, val);
             }
             *pos += 1;

@@ -3,7 +3,9 @@ use std::fs::{File, read};
 use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
-use crate::codec::{Value, bencode_int, bencode_string, decode};
+use sha1::{Digest, Sha1};
+
+use crate::codec::{Value, bencode_int, bencode_string, decode_with_info_slice};
 use crate::error::{TrError, TrResult};
 use crate::progress::ProgressReporter;
 use crate::tr_file::TrFile;
@@ -72,7 +74,7 @@ impl Torrent {
     }
 
     pub fn from_bytes(bcode: &[u8]) -> TrResult<Self> {
-        let root = decode(bcode)?;
+        let (root, raw_info_bytes) = decode_with_info_slice(bcode)?;
         let tr_dict = match root {
             Value::Dict(m) => m,
             _ => {
@@ -203,7 +205,8 @@ impl Torrent {
             created_by: optional_string(&tr_dict, "created by")?,
             creation_date: optional_i64(&tr_dict, "creation date"),
             encoding: optional_string(&tr_dict, "encoding")?,
-            hash: optional_string(&tr_dict, "hash")?,
+            hash: optional_string(&tr_dict, "hash")?
+                .or_else(|| raw_info_bytes.map(|bytes| hex::encode(Sha1::digest(bytes)))),
             info: Some(tr_info),
         })
     }

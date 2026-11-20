@@ -49,6 +49,10 @@ fn reads_utf8_alternatives_to_legacy_names_and_paths() {
     let info = torrent.get_info().expect("torrent has info");
     assert_eq!(info.name(), Some("星空"));
     assert_eq!(info.files().unwrap()[0].path(), &[String::from("音楽.tak")]);
+    // Raw info dictionary bytes include legacy/extra keys, so the parsed info hash
+    // must match the raw info slice rather than a re-encoded subset of fields.
+    assert!(torrent.hash().is_some());
+    assert_ne!(torrent.hash(), Some(info.hash().as_str()));
 }
 
 #[test]
