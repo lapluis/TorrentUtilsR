@@ -5,7 +5,7 @@ use std::path::Path;
 
 use sha1::{Digest, Sha1};
 
-use crate::codec::{Value, bencode_int, bencode_string, decode_with_info_slice};
+use crate::codec::{Value, decode_with_info_slice, write_bencode_int, write_bencode_string};
 use crate::error::{TrError, TrResult};
 use crate::progress::ProgressReporter;
 use crate::tr_file::TrFile;
@@ -244,50 +244,49 @@ impl Torrent {
     }
 
     pub fn to_bytes(&self) -> TrResult<Vec<u8>> {
-        let mut bcode: Vec<u8> = Vec::new();
+        let Some(info) = &self.info else {
+            return Err(TrError::MissingField("info"));
+        };
+        let mut bcode = Vec::with_capacity(info.pieces().len().saturating_add(256));
         bcode.push(b'd');
         if let Some(announce) = &self.announce {
-            bcode.extend(bencode_string("announce"));
-            bcode.extend(bencode_string(announce));
+            write_bencode_string(&mut bcode, "announce");
+            write_bencode_string(&mut bcode, announce);
         }
         if let Some(announce_list) = &self.announce_list {
-            bcode.extend(bencode_string("announce-list"));
+            write_bencode_string(&mut bcode, "announce-list");
             bcode.push(b'l');
             for tier in announce_list {
                 bcode.push(b'l');
                 for url in tier {
-                    bcode.extend(bencode_string(url));
+                    write_bencode_string(&mut bcode, url);
                 }
                 bcode.push(b'e');
             }
             bcode.push(b'e');
         }
         if let Some(comment) = &self.comment {
-            bcode.extend(bencode_string("comment"));
-            bcode.extend(bencode_string(comment));
+            write_bencode_string(&mut bcode, "comment");
+            write_bencode_string(&mut bcode, comment);
         }
         if let Some(created_by) = &self.created_by {
-            bcode.extend(bencode_string("created by"));
-            bcode.extend(bencode_string(created_by));
+            write_bencode_string(&mut bcode, "created by");
+            write_bencode_string(&mut bcode, created_by);
         }
         if let Some(creation_date) = self.creation_date {
-            bcode.extend(bencode_string("creation date"));
-            bcode.extend(bencode_int(creation_date));
+            write_bencode_string(&mut bcode, "creation date");
+            write_bencode_int(&mut bcode, creation_date);
         }
         if let Some(encoding) = &self.encoding {
-            bcode.extend(bencode_string("encoding"));
-            bcode.extend(bencode_string(encoding));
+            write_bencode_string(&mut bcode, "encoding");
+            write_bencode_string(&mut bcode, encoding);
         }
         if let Some(hash) = &self.hash {
-            bcode.extend(bencode_string("hash"));
-            bcode.extend(bencode_string(hash));
+            write_bencode_string(&mut bcode, "hash");
+            write_bencode_string(&mut bcode, hash);
         }
-        if let Some(info) = &self.info {
-            bcode.extend(bencode_string("info"));
-            bcode.extend(info.bencode());
-        } else {
-            return Err(TrError::MissingField("info"));
-        }
+        write_bencode_string(&mut bcode, "info");
+        info.write_bencode(&mut bcode);
         bcode.push(b'e');
         Ok(bcode)
     }

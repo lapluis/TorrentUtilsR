@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 
 use crate::error::{BencodeError, TrResult};
 
@@ -134,42 +135,27 @@ fn parse<'a>(
     }
 }
 
-pub(crate) fn bencode_bytes(bytes: &[u8]) -> Vec<u8> {
-    let mut bcode: Vec<u8> = Vec::new();
-    let len = bytes.len();
-    bcode.extend(len.to_string().as_bytes());
-    bcode.push(b':');
-    bcode.extend(bytes);
-    bcode
+pub(crate) fn write_bencode_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    let _ = write!(out, "{}:", bytes.len());
+    out.extend_from_slice(bytes);
 }
 
-pub(crate) fn bencode_string(s: &str) -> Vec<u8> {
-    bencode_bytes(s.as_bytes())
+pub(crate) fn write_bencode_string(out: &mut Vec<u8>, s: &str) {
+    write_bencode_bytes(out, s.as_bytes());
 }
 
-fn bencode_integer(value: impl ToString) -> Vec<u8> {
-    let value = value.to_string();
-    let mut bcode: Vec<u8> = Vec::new();
-    bcode.push(b'i');
-    bcode.extend(value.as_bytes());
-    bcode.push(b'e');
-    bcode
+pub(crate) fn write_bencode_uint(out: &mut Vec<u8>, value: usize) {
+    let _ = write!(out, "i{value}e");
 }
 
-pub(crate) fn bencode_uint(i: usize) -> Vec<u8> {
-    bencode_integer(i)
+pub(crate) fn write_bencode_int(out: &mut Vec<u8>, value: i64) {
+    let _ = write!(out, "i{value}e");
 }
 
-pub(crate) fn bencode_int(i: i64) -> Vec<u8> {
-    bencode_integer(i)
-}
-
-pub(crate) fn bencode_string_list(list: &[String]) -> Vec<u8> {
-    let mut bcode: Vec<u8> = Vec::new();
-    bcode.push(b'l');
+pub(crate) fn write_bencode_string_list(out: &mut Vec<u8>, list: &[String]) {
+    out.push(b'l');
     for item in list {
-        bcode.extend(bencode_string(item));
+        write_bencode_string(out, item);
     }
-    bcode.push(b'e');
-    bcode
+    out.push(b'e');
 }

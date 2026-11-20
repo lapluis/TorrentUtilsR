@@ -2,11 +2,11 @@ use std::path::Path;
 
 use sha1::{Digest, Sha1};
 
-use crate::codec::{bencode_bytes, bencode_string, bencode_uint};
+use crate::codec::{write_bencode_bytes, write_bencode_string, write_bencode_uint};
 use crate::error::{TrError, TrResult};
 use crate::hash::{SHA1_HASH_SIZE, hash_tr_files};
 use crate::progress::ProgressReporter;
-use crate::tr_file::{TrFile, bencode_file_list};
+use crate::tr_file::{TrFile, write_bencode_file_list};
 use crate::walk::{WalkMode, walk_target};
 
 #[derive(Clone, Debug)]
@@ -223,34 +223,38 @@ impl TrInfo {
             .ok_or(TrError::MissingField("name"))
     }
 
-    pub fn bencode(&self) -> Vec<u8> {
-        let mut bcode: Vec<u8> = Vec::new();
-        bcode.push(b'd');
+    pub(crate) fn write_bencode(&self, out: &mut Vec<u8>) {
+        out.push(b'd');
         if let Some(files) = &self.files {
-            bcode.extend(bencode_string("files"));
-            bcode.extend(bencode_file_list(files));
+            write_bencode_string(out, "files");
+            write_bencode_file_list(out, files);
         }
         if let Some(length) = self.length {
-            bcode.extend(bencode_string("length"));
-            bcode.extend(bencode_uint(length));
+            write_bencode_string(out, "length");
+            write_bencode_uint(out, length);
         }
         if let Some(name) = &self.name {
-            bcode.extend(bencode_string("name"));
-            bcode.extend(bencode_string(name));
+            write_bencode_string(out, "name");
+            write_bencode_string(out, name);
         }
-        bcode.extend(bencode_string("piece length"));
-        bcode.extend(bencode_uint(self.piece_length));
-        bcode.extend(bencode_string("pieces"));
-        bcode.extend(bencode_bytes(&self.pieces));
+        write_bencode_string(out, "piece length");
+        write_bencode_uint(out, self.piece_length);
+        write_bencode_string(out, "pieces");
+        write_bencode_bytes(out, &self.pieces);
         if self.private {
-            bcode.extend(bencode_string("private"));
-            bcode.extend(bencode_uint(1));
+            write_bencode_string(out, "private");
+            write_bencode_uint(out, 1);
         }
         if let Some(source) = &self.source {
-            bcode.extend(bencode_string("source"));
-            bcode.extend(bencode_string(source));
+            write_bencode_string(out, "source");
+            write_bencode_string(out, source);
         }
-        bcode.push(b'e');
+        out.push(b'e');
+    }
+
+    pub fn bencode(&self) -> Vec<u8> {
+        let mut bcode = Vec::with_capacity(self.pieces.len().saturating_add(128));
+        self.write_bencode(&mut bcode);
         bcode
     }
 
