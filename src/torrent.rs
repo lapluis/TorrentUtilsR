@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{File, read};
+use std::fs::{File, OpenOptions, read};
 use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
@@ -58,13 +58,23 @@ impl Torrent {
 
     pub fn write_to_file(&self, torrent_path: impl AsRef<Path>, force: bool) -> TrResult<()> {
         let torrent_path = torrent_path.as_ref();
-        if !force && torrent_path.exists() {
-            return Err(
-                ioError::new(ErrorKind::AlreadyExists, "output file already exists").into(),
-            );
-        }
-        let mut file = File::create(torrent_path)?;
-        file.write_all(&self.to_bytes()?)?;
+        let bytes = self.to_bytes()?;
+        let mut file = if force {
+            File::create(torrent_path)?
+        } else {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(torrent_path)
+                .map_err(|err| {
+                    if err.kind() == ErrorKind::AlreadyExists {
+                        ioError::new(ErrorKind::AlreadyExists, "output file already exists")
+                    } else {
+                        err
+                    }
+                })?
+        };
+        file.write_all(&bytes)?;
         Ok(())
     }
 
