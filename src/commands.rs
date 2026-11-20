@@ -47,9 +47,14 @@ fn with_progress<T>(quiet: bool, operation: impl FnOnce(Option<&dyn ProgressRepo
     result
 }
 
+fn is_torrent_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 8 && bytes[bytes.len() - 8..].eq_ignore_ascii_case(b".torrent")
+}
+
 pub(crate) fn run(args: &Args, config: &Config) -> Result<(), CliError> {
     match args.input.len() {
-        1 if args.input[0].ends_with(".torrent") => run_info(&args.input[0], args),
+        1 if is_torrent_path(&args.input[0]) => run_info(&args.input[0], args),
         1 => run_create(&args.input[0], args, config),
         2 => run_verify(&args.input, args, config),
         _ => Err(CliError::error(
@@ -123,7 +128,7 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
 
     let torrent_path = match args.output.as_deref() {
         Some(path) => {
-            if !path.ends_with(".torrent") {
+            if !is_torrent_path(path) {
                 return Err(CliError::error("Error: Output path must end with .torrent"));
             }
             let path_obj = Path::new(path);
@@ -138,7 +143,11 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
                 parent_path.join(path).to_string_lossy().to_string()
             }
         }
-        None => format!("{input}.torrent"),
+        None => {
+            let trimmed = input.trim_end_matches(['/', '\\']);
+            let base = if trimmed.is_empty() { input } else { trimmed };
+            format!("{base}.torrent")
+        }
     };
 
     let mut force_overwrite = args.force;
@@ -204,9 +213,9 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
 }
 
 fn run_verify(inputs: &[String], args: &Args, config: &Config) -> Result<(), CliError> {
-    let (torrent_path, target_path) = if inputs[0].ends_with(".torrent") {
+    let (torrent_path, target_path) = if is_torrent_path(&inputs[0]) {
         (inputs[0].as_str(), inputs[1].as_str())
-    } else if inputs[1].ends_with(".torrent") {
+    } else if is_torrent_path(&inputs[1]) {
         (inputs[1].as_str(), inputs[0].as_str())
     } else {
         return Err(CliError::error(

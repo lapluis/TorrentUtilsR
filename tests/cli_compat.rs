@@ -416,3 +416,25 @@ fn inconsistent_piece_count_is_reported_without_panicking() {
     assert!(stderr.contains("piece count mismatch"), "{stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
 }
+
+#[test]
+fn trailing_slash_directory_creates_sibling_torrent() {
+    let test_dir = TestDir::new("trailing_slash");
+    let payload = test_dir.path().join("series");
+    fs::create_dir(&payload).expect("create payload dir");
+    fs::write(payload.join("ep1.bin"), b"episode1").expect("write file");
+
+    let input_with_slash = format!("{}/", path_string(&payload));
+    let create = run(&[
+        input_with_slash,
+        String::from("-g"),
+        test_dir.missing_config(),
+        String::from("-l"),
+        String::from("14"),
+        String::from("-d"),
+        String::from("-q"),
+    ]);
+    assert!(create.status.success(), "{}", text(&create.stderr));
+    assert!(test_dir.path().join("series.torrent").is_file());
+    assert!(!payload.join(".torrent").exists());
+}
