@@ -363,6 +363,34 @@ fn parser_returns_structured_bencode_errors() {
         error,
         TrError::Bencode(BencodeError::UnexpectedToken(b'x'))
     ));
+
+    for invalid_int in [
+        &b"i-0e"[..],
+        &b"i01e"[..],
+        &b"i-01e"[..],
+        &b"i+1e"[..],
+        &b"ie"[..],
+    ] {
+        let error = Torrent::from_bytes(invalid_int).expect_err("invalid integer");
+        assert!(
+            matches!(error, TrError::Bencode(BencodeError::InvalidInteger)),
+            "unexpected error for {invalid_int:?}: {error}"
+        );
+    }
+
+    let error = Torrent::from_bytes(b"01:a").expect_err("leading zero string length");
+    assert!(matches!(
+        error,
+        TrError::Bencode(BencodeError::InvalidStringLength)
+    ));
+
+    let mut deeply_nested = vec![b'l'; 200];
+    deeply_nested.extend(vec![b'e'; 200]);
+    let error = Torrent::from_bytes(&deeply_nested).expect_err("deep nesting must fail");
+    assert!(matches!(
+        error,
+        TrError::Bencode(BencodeError::MaxDepthExceeded)
+    ));
 }
 
 #[test]

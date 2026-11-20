@@ -16,6 +16,7 @@ pub enum BencodeError {
     TruncatedString,
     DictKeyNotString,
     TrailingData,
+    MaxDepthExceeded,
 }
 
 impl Display for BencodeError {
@@ -32,6 +33,7 @@ impl Display for BencodeError {
             Self::TruncatedString => write!(f, "truncated string"),
             Self::DictKeyNotString => write!(f, "dictionary key is not a string"),
             Self::TrailingData => write!(f, "trailing data after torrent"),
+            Self::MaxDepthExceeded => write!(f, "maximum nesting depth exceeded"),
         }
     }
 }

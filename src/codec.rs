@@ -2,9 +2,11 @@ use std::collections::HashMap;
 
 use crate::error::{BencodeError, TrResult};
 
+const MAX_BENCODE_DEPTH: usize = 128;
+
 pub(crate) enum Value<'a> {
-    Int(usize),
-    UInt(i64),
+    Uint(usize),
+    NegInt(i64),
     Bytes(&'a [u8]),
     List(Vec<Value<'a>>),
     Dict(HashMap<String, Value<'a>>),
@@ -12,14 +14,29 @@ pub(crate) enum Value<'a> {
 
 pub(crate) fn decode(data: &[u8]) -> TrResult<Value<'_>> {
     let mut pos = 0;
-    let value = parse(data, &mut pos)?;
+    let value = parse(data, &mut pos, 0)?;
     if pos != data.len() {
         return Err(BencodeError::TrailingData.into());
     }
     Ok(value)
 }
 
-fn parse<'a>(data: &'a [u8], pos: &mut usize) -> Result<Value<'a>, BencodeError> {
+fn is_valid_bencode_digits(s: &str, allow_zero: bool) -> bool {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    if s.starts_with('0') {
+        allow_zero && s.len() == 1
+    } else {
+        true
+    }
+}
+
+fn parse<'a>(data: &'a [u8], pos: &mut usize, depth: usize) -> Result<Value<'a>, BencodeError> {
+    if depth > MAX_BENCODE_DEPTH {
+        return Err(BencodeError::MaxDepthExceeded);
+    }
+
     match data.get(*pos) {
         Some(b'i') => {
             *pos += 1;
@@ -33,23 +50,29 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize) -> Result<Value<'a>, BencodeError>
             let num_str = std::str::from_utf8(&data[start..*pos])
                 .map_err(|_| BencodeError::InvalidUtf8("integer"))?;
             *pos += 1;
-            if num_str.starts_with("-") {
+            if let Some(digits) = num_str.strip_prefix('-') {
+                if !is_valid_bencode_digits(digits, false) {
+                    return Err(BencodeError::InvalidInteger);
+                }
                 let val = num_str
                     .parse::<i64>()
                     .map_err(|_| BencodeError::InvalidInteger)?;
-                Ok(Value::UInt(val))
+                Ok(Value::NegInt(val))
             } else {
+                if !is_valid_bencode_digits(num_str, true) {
+                    return Err(BencodeError::InvalidInteger);
+                }
                 let val = num_str
                     .parse::<usize>()
                     .map_err(|_| BencodeError::InvalidInteger)?;
-                Ok(Value::Int(val))
+                Ok(Value::Uint(val))
             }
         }
         Some(b'l') => {
             *pos += 1;
             let mut items = Vec::new();
             while data.get(*pos) != Some(&b'e') {
-                items.push(parse(data, pos)?);
+                items.push(parse(data, pos, depth + 1)?);
             }
             *pos += 1;
             Ok(Value::List(items))
@@ -58,12 +81,12 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize) -> Result<Value<'a>, BencodeError>
             *pos += 1;
             let mut map = HashMap::new();
             while data.get(*pos) != Some(&b'e') {
-                let key = match parse(data, pos)? {
+                let key = match parse(data, pos, depth + 1)? {
                     Value::Bytes(b) => String::from_utf8(b.to_vec())
                         .map_err(|_| BencodeError::InvalidUtf8("dictionary key"))?,
                     _ => return Err(BencodeError::DictKeyNotString),
                 };
-                let val = parse(data, pos)?;
+                let val = parse(data, pos, depth + 1)?;
                 map.insert(key, val);
             }
             *pos += 1;
@@ -79,6 +102,9 @@ fn parse<'a>(data: &'a [u8], pos: &mut usize) -> Result<Value<'a>, BencodeError>
             }
             let len_str = std::str::from_utf8(&data[start..*pos])
                 .map_err(|_| BencodeError::InvalidUtf8("string length"))?;
+            if !is_valid_bencode_digits(len_str, true) {
+                return Err(BencodeError::InvalidStringLength);
+            }
             let len = len_str
                 .parse::<usize>()
                 .map_err(|_| BencodeError::InvalidStringLength)?;

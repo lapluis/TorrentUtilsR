@@ -99,7 +99,7 @@ impl Torrent {
                         )));
                     };
                     let length = match m.get("length") {
-                        Some(Value::Int(i)) => *i,
+                        Some(Value::Uint(i)) => *i,
                         _ => {
                             return Err(TrError::InvalidTorrent(String::from(
                                 "file length invalid",
@@ -142,7 +142,7 @@ impl Torrent {
             },
         )?;
         let piece_length = match info_dict.get("piece length") {
-            Some(Value::Int(i)) => *i,
+            Some(Value::Uint(i)) => *i,
             _ => {
                 return Err(TrError::InvalidTorrent(String::from(
                     "piece length missing",
@@ -299,15 +299,15 @@ fn optional_string(dict: &HashMap<String, Value<'_>>, key: &str) -> TrResult<Opt
 
 fn optional_int(dict: &HashMap<String, Value<'_>>, key: &str) -> Option<usize> {
     match dict.get(key) {
-        Some(Value::Int(value)) => Some(*value),
+        Some(Value::Uint(value)) => Some(*value),
         _ => None,
     }
 }
 
 fn optional_i64(dict: &HashMap<String, Value<'_>>, key: &str) -> Option<i64> {
     match dict.get(key) {
-        Some(Value::UInt(value)) => Some(*value),
-        Some(Value::Int(value)) => Some(*value as i64),
+        Some(Value::NegInt(value)) => Some(*value),
+        Some(Value::Uint(value)) => Some(*value as i64),
         _ => None,
     }
 }
