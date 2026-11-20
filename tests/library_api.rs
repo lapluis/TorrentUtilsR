@@ -391,3 +391,82 @@ fn file_writes_respect_overwrite_policy() {
         .write_to_file(&torrent_path, true)
         .expect("forced write succeeds");
 }
+
+#[test]
+fn verifies_zero_byte_files_in_single_and_multi_file_torrents() {
+    let test_dir = TestDir::new("zero_byte_verify");
+
+    // Single-file 0-byte torrent
+    let empty_single = test_dir.path().join("empty.bin");
+    fs::write(&empty_single, []).expect("write empty file");
+    let mut single_torrent = empty_torrent();
+    single_torrent
+        .create_torrent(&empty_single, &create_options(16 * 1024), None)
+        .expect("create single empty torrent");
+    let single_info = single_torrent.get_info().expect("single info");
+
+    // Modified to non-empty should fail
+    fs::write(&empty_single, b"not empty").expect("make empty file non-empty");
+    let report = single_info
+        .verify(&empty_single, &VerificationOptions::default(), None)
+        .expect("verify modified empty file");
+    assert!(!report.is_ok());
+    assert_eq!(report.failed_files.len(), 1);
+    assert!(report.failed_files[0].missing_or_size_mismatch);
+
+    // Deleted file should fail
+    fs::remove_file(&empty_single).expect("remove empty file");
+    let report = single_info
+        .verify(&empty_single, &VerificationOptions::default(), None)
+        .expect("verify missing empty file");
+    assert!(!report.is_ok());
+    assert_eq!(report.failed_files.len(), 1);
+    assert!(report.failed_files[0].missing_or_size_mismatch);
+
+    // Replaced with directory should fail
+    fs::create_dir(&empty_single).expect("create dir at file path");
+    let report = single_info
+        .verify(&empty_single, &VerificationOptions::default(), None)
+        .expect("verify dir instead of file");
+    assert!(!report.is_ok());
+    assert_eq!(report.failed_files.len(), 1);
+    assert!(report.failed_files[0].missing_or_size_mismatch);
+
+    // Multi-file torrent with a 0-byte file alongside a non-empty file
+    let multi_dir = test_dir.path().join("multi");
+    fs::create_dir(&multi_dir).expect("create multi dir");
+    fs::write(multi_dir.join("data.bin"), b"abcdefgh").expect("write data file");
+    fs::write(multi_dir.join("empty.txt"), []).expect("write empty file");
+
+    let mut multi_torrent = empty_torrent();
+    multi_torrent
+        .create_torrent(&multi_dir, &create_options(4), None)
+        .expect("create multi torrent");
+    let multi_info = multi_torrent.get_info().expect("multi info");
+    assert!(
+        multi_info
+            .verify(&multi_dir, &VerificationOptions::default(), None)
+            .expect("verify intact multi dir")
+            .is_ok()
+    );
+
+    // Deleting the 0-byte file must be detected
+    fs::remove_file(multi_dir.join("empty.txt")).expect("remove empty file");
+    let report = multi_info
+        .verify(&multi_dir, &VerificationOptions::default(), None)
+        .expect("verify multi dir with missing empty file");
+    assert!(!report.is_ok());
+    assert_eq!(report.failed_files.len(), 1);
+    assert_eq!(report.failed_files[0].path, "empty.txt");
+    assert!(report.failed_files[0].missing_or_size_mismatch);
+
+    // Making the 0-byte file non-empty must also be detected
+    fs::write(multi_dir.join("empty.txt"), b"x").expect("write bytes to empty file");
+    let report = multi_info
+        .verify(&multi_dir, &VerificationOptions::default(), None)
+        .expect("verify multi dir with non-empty zero-byte file");
+    assert!(!report.is_ok());
+    assert_eq!(report.failed_files.len(), 1);
+    assert_eq!(report.failed_files[0].path, "empty.txt");
+    assert!(report.failed_files[0].missing_or_size_mismatch);
+}

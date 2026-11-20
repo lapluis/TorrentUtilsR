@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::HashSet;
 use std::fs::metadata;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{TrError, TrResult};
 use crate::hash::{SHA1_HASH_SIZE, hash_piece_file, split_hash_pieces};
@@ -138,7 +138,6 @@ fn verify_tr_files(
 ) -> TrResult<FailedInfo> {
     let piece_file_info = calc_piece_file_info(tr_files, piece_length);
 
-    let mut file_status_map: HashMap<PathBuf, bool> = HashMap::new();
     let mut failed_info = FailedInfo {
         files: HashSet::new(),
         files_known: HashSet::new(),
@@ -147,36 +146,29 @@ fn verify_tr_files(
     let pieces_count = piece_slices.len();
     let mut progress = ProgressGuard::begin(progress, pieces_count);
 
-    for (i, piece) in piece_file_info.iter().enumerate() {
-        let mut files_ok: bool = true;
-        for file_hash_info in piece {
-            let tr_file = &tr_files[file_hash_info.file_index];
-            let f_path = tr_file.join_full_path(base_path);
-            match file_status_map.entry(f_path) {
-                Entry::Vacant(entry) => {
-                    let file_ok = metadata(entry.key())
-                        .ok()
-                        .is_some_and(|meta| meta.len() == tr_file.length() as u64);
-                    if !file_ok {
-                        failed_info.files_known.insert(file_hash_info.file_index);
-                        files_ok = false;
-                    }
-                    entry.insert(file_ok);
-                }
-                Entry::Occupied(entry) => {
-                    if !*entry.get() {
-                        files_ok = false;
-                    }
-                }
-            }
+    let mut file_status = Vec::with_capacity(tr_files.len());
+    for (file_index, tr_file) in tr_files.iter().enumerate() {
+        let f_path = tr_file.join_full_path(base_path);
+        let file_ok = metadata(&f_path)
+            .ok()
+            .is_some_and(|meta| meta.is_file() && meta.len() == tr_file.length() as u64);
+        if !file_ok {
+            failed_info.files_known.insert(file_index);
+            failed_info.files.insert(file_index);
         }
+        file_status.push(file_ok);
+    }
+
+    for (i, piece) in piece_file_info.iter().enumerate() {
+        let files_ok = piece
+            .iter()
+            .all(|file_hash_info| file_status[file_hash_info.file_index]);
         if !files_ok {
             failed_info.pieces.insert(i);
             for file_hash_info in piece {
                 failed_info.files.insert(file_hash_info.file_index);
             }
             progress.advance(1);
-            continue;
         }
     }
 
