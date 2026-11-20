@@ -177,10 +177,14 @@ fn piped_output_does_not_emit_terminal_progress() {
         &[("WT_SESSION", "test-session")],
     );
     assert!(create.status.success(), "{}", text(&create.stderr));
-    assert!(create.stderr.is_empty(), "{}", text(&create.stderr));
+
+    let stderr = text(&create.stderr);
+    assert!(stderr.contains("Processed 2 pieces in "), "{stderr}");
+    assert!(!stderr.contains("✓ ["), "{stderr}");
+    assert!(!stderr.contains('\x1b'), "{stderr}");
 
     let stdout = text(&create.stdout);
-    assert!(stdout.contains("Processed 2 pieces in "), "{stdout}");
+    assert!(!stdout.contains("Processed 2 pieces in "), "{stdout}");
     assert!(!stdout.contains('\x1b'), "{stdout}");
 }
 

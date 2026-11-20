@@ -1,6 +1,7 @@
 use std::fmt::Arguments;
 use std::io::{IsTerminal, Write, stderr, stdout};
-use std::sync::Mutex;
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use anstyle_progress::{TermProgress, supports_term_progress};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -237,10 +238,7 @@ pub(crate) fn print_styled_lines(lines: &[StyledLine]) {
     }
 }
 
-struct TerminalProgressState {
-    enabled: bool,
-    last_percent: Option<u8>,
-}
+const NO_PERCENT: u8 = u8::MAX;
 
 fn progress_percent(position: u64, length: u64) -> Option<u8> {
     (length > 0).then(|| (u128::from(position) * 100 / u128::from(length)).min(100) as u8)
@@ -253,38 +251,32 @@ fn write_terminal_progress(progress: TermProgress) {
 }
 
 pub(crate) struct CliProgress {
-    bar: Mutex<Option<ProgressBar>>,
-    terminal: Mutex<TerminalProgressState>,
+    bar: RwLock<Option<ProgressBar>>,
+    terminal_enabled: AtomicBool,
+    last_percent: AtomicU8,
 }
 
 impl CliProgress {
     pub(crate) const fn new() -> Self {
         Self {
-            bar: Mutex::new(None),
-            terminal: Mutex::new(TerminalProgressState {
-                enabled: false,
-                last_percent: None,
-            }),
+            bar: RwLock::new(None),
+            terminal_enabled: AtomicBool::new(false),
+            last_percent: AtomicU8::new(NO_PERCENT),
         }
     }
 
     fn take_bar(&self) -> Option<ProgressBar> {
-        match self.bar.lock() {
+        match self.bar.write() {
             Ok(mut bar) => bar.take(),
             Err(poisoned) => poisoned.into_inner().take(),
         }
     }
 
     fn clear_terminal(&self) {
-        let mut terminal = match self.terminal.lock() {
-            Ok(terminal) => terminal,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if terminal.enabled {
+        if self.terminal_enabled.swap(false, Ordering::AcqRel) {
             write_terminal_progress(TermProgress::remove());
-            terminal.enabled = false;
         }
-        terminal.last_percent = None;
+        self.last_percent.store(NO_PERCENT, Ordering::Release);
     }
 }
 
@@ -298,26 +290,25 @@ impl ProgressReporter for CliProgress {
             .expect("the progress bar template is valid")
             .progress_chars("#>-"),
         );
-        *self.bar.lock().expect("progress lock poisoned") = Some(pb);
+        *self.bar.write().expect("progress lock poisoned") = Some(pb);
 
-        let mut terminal = self
-            .terminal
-            .lock()
-            .expect("terminal progress lock poisoned");
-        if terminal.enabled {
+        if self.terminal_enabled.swap(false, Ordering::AcqRel) {
             write_terminal_progress(TermProgress::remove());
         }
-        terminal.enabled = total > 0 && supports_term_progress(stderr().is_terminal());
-        terminal.last_percent = None;
-        if terminal.enabled {
+
+        let enabled = total > 0 && supports_term_progress(stderr().is_terminal());
+        if enabled {
+            self.last_percent.store(0, Ordering::Release);
+            self.terminal_enabled.store(true, Ordering::Release);
             write_terminal_progress(TermProgress::start().percent(0));
-            terminal.last_percent = Some(0);
+        } else {
+            self.last_percent.store(NO_PERCENT, Ordering::Release);
         }
     }
 
     fn advance(&self, delta: usize) {
         let percent = {
-            let bar = self.bar.lock().expect("progress lock poisoned");
+            let bar = self.bar.read().expect("progress lock poisoned");
             let Some(pb) = bar.as_ref() else {
                 return;
             };
@@ -328,13 +319,24 @@ impl ProgressReporter for CliProgress {
             return;
         };
 
-        let mut terminal = self
-            .terminal
-            .lock()
-            .expect("terminal progress lock poisoned");
-        if terminal.enabled && terminal.last_percent.is_none_or(|last| percent > last) {
-            write_terminal_progress(TermProgress::start().percent(percent));
-            terminal.last_percent = Some(percent);
+        if !self.terminal_enabled.load(Ordering::Acquire) {
+            return;
+        }
+
+        let mut prev = self.last_percent.load(Ordering::Acquire);
+        while prev == NO_PERCENT || percent > prev {
+            match self.last_percent.compare_exchange_weak(
+                prev,
+                percent,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    write_terminal_progress(TermProgress::start().percent(percent));
+                    break;
+                }
+                Err(actual) => prev = actual,
+            }
         }
     }
 
@@ -343,16 +345,12 @@ impl ProgressReporter for CliProgress {
             let elapsed = pb.elapsed();
             let pieces_count = pb.length().unwrap_or_default();
             pb.finish_and_clear();
-            if stdout().is_terminal() {
-                println!(
+            if stderr().is_terminal() {
+                eprintln!(
                     "{COLOR_PROGRESS_GREEN}✓{COLOR_RESET} [{COLOR_PROGRESS_CYAN}########################################{COLOR_RESET}] [{pieces_count}/{pieces_count}] pieces (100%, eta: 0s)"
                 );
-            } else {
-                println!(
-                    "✓ [########################################] [{pieces_count}/{pieces_count}] pieces (100%, eta: 0s)"
-                );
             }
-            println!("Processed {pieces_count} pieces in {elapsed:.2?}");
+            eprintln!("Processed {pieces_count} pieces in {elapsed:.2?}");
         }
 
         self.clear_terminal();
@@ -368,13 +366,9 @@ impl ProgressReporter for CliProgress {
 
 impl Drop for CliProgress {
     fn drop(&mut self) {
-        let terminal = match self.terminal.get_mut() {
-            Ok(terminal) => terminal,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if terminal.enabled {
+        if *self.terminal_enabled.get_mut() {
             write_terminal_progress(TermProgress::remove());
-            terminal.enabled = false;
+            *self.terminal_enabled.get_mut() = false;
         }
 
         let bar = match self.bar.get_mut() {
