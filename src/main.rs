@@ -209,7 +209,7 @@ fn main() -> ExitCode {
     wait_for_enter(config.wait_exit);
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(_) => ExitCode::FAILURE,
     }
 }

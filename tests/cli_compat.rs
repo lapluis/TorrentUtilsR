@@ -141,7 +141,7 @@ fn single_file_create_info_tree_and_verify_lifecycle() {
         test_dir.missing_config(),
         String::from("-q"),
     ]);
-    assert!(verify.status.success(), "{}", text(&verify.stderr));
+    assert_eq!(verify.status.code(), Some(2), "{}", text(&verify.stderr));
     assert_eq!(
         text(&verify.stdout),
         concat!(
