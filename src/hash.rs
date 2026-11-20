@@ -11,6 +11,7 @@ use crate::progress::{ProgressGuard, ProgressReporter};
 use crate::tr_file::TrFile;
 
 pub(crate) const SHA1_HASH_SIZE: usize = 20;
+const MAX_READ_BUFFER_SIZE: usize = 256 * 1024;
 
 pub(crate) fn hash_tr_files(
     base_path: &Path,
@@ -59,6 +60,20 @@ pub(crate) fn hash_piece_file(
         .map(|tr_file| tr_file.join_full_path(base_path))
         .collect();
 
+    let buf_size = piece_length.clamp(1, MAX_READ_BUFFER_SIZE);
+
+    if n_jobs == 1 {
+        let mut reader = SequentialFileReader::new();
+        let mut buf = vec![0u8; buf_size];
+        return hash_piece_chunk(
+            piece_file_info,
+            &f_path_list,
+            &mut reader,
+            &mut buf,
+            progress,
+        );
+    }
+
     // More chunks than workers retain Rayon's load balancing while each chunk still
     // processes enough adjacent pieces to reuse its current file handle efficiently.
     const CHUNKS_PER_WORKER: usize = 4;
@@ -68,50 +83,59 @@ pub(crate) fn hash_piece_file(
         .max(1);
     let chunk_size = piece_file_info.len().div_ceil(chunk_count);
 
-    let results: Result<Vec<[u8; SHA1_HASH_SIZE]>, TrError> = {
-        let pool = ThreadPoolBuilder::new()
-            .num_threads(n_jobs)
-            .build()
-            .map_err(|e| TrError::ThreadPool(format!("failed to create: {e}")))?;
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(n_jobs)
+        .build()
+        .map_err(|e| TrError::ThreadPool(format!("failed to create: {e}")))?;
 
-        pool.install(|| {
-            piece_file_info
-                .par_chunks(chunk_size)
-                .map(|piece_chunk| -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
-                    let mut reader = SequentialFileReader::new();
-                    let mut buf = vec![0; piece_length];
-                    let mut hashes = Vec::with_capacity(piece_chunk.len());
+    pool.install(|| {
+        piece_file_info
+            .par_chunks(chunk_size)
+            .map_init(
+                || (SequentialFileReader::new(), vec![0u8; buf_size]),
+                |(reader, buf), piece_chunk| {
+                    hash_piece_chunk(piece_chunk, &f_path_list, reader, buf, progress)
+                },
+            )
+            .collect::<TrResult<Vec<_>>>()
+            .map(|chunks| chunks.into_iter().flatten().collect())
+    })
+}
 
-                    for piece in piece_chunk {
-                        let mut hasher = Sha1::new();
-                        for file_hash_info in piece {
-                            let f_path = &f_path_list[file_hash_info.file_index];
-                            let buf_slice = &mut buf[..file_hash_info.length];
-                            reader.read_exact_at(
-                                file_hash_info.file_index,
-                                f_path,
-                                file_hash_info.file_offset as u64,
-                                buf_slice,
-                            )?;
-                            hasher.update(buf_slice);
-                        }
+fn hash_piece_chunk(
+    piece_chunk: &[Vec<FileHashInfo>],
+    f_path_list: &[std::path::PathBuf],
+    reader: &mut SequentialFileReader,
+    buf: &mut [u8],
+    progress: &ProgressGuard<'_>,
+) -> TrResult<Vec<[u8; SHA1_HASH_SIZE]>> {
+    let mut hashes = Vec::with_capacity(piece_chunk.len());
 
-                        let calc_hash = hasher.finalize();
-                        let mut hash = [0u8; SHA1_HASH_SIZE];
-                        hash.copy_from_slice(&calc_hash);
-                        hashes.push(hash);
+    for piece in piece_chunk {
+        let mut hasher = Sha1::new();
+        for file_hash_info in piece {
+            let f_path = &f_path_list[file_hash_info.file_index];
+            let mut offset = file_hash_info.file_offset as u64;
+            let mut remaining = file_hash_info.length;
+            while remaining > 0 {
+                let to_read = remaining.min(buf.len());
+                let buf_slice = &mut buf[..to_read];
+                reader.read_exact_at(file_hash_info.file_index, f_path, offset, buf_slice)?;
+                hasher.update(buf_slice);
+                offset += to_read as u64;
+                remaining -= to_read;
+            }
+        }
 
-                        progress.advance(1);
-                    }
+        let calc_hash = hasher.finalize();
+        let mut hash = [0u8; SHA1_HASH_SIZE];
+        hash.copy_from_slice(&calc_hash);
+        hashes.push(hash);
 
-                    Ok(hashes)
-                })
-                .collect::<TrResult<Vec<_>>>()
-                .map(|chunks| chunks.into_iter().flatten().collect())
-        })
-    };
+        progress.advance(1);
+    }
 
-    results
+    Ok(hashes)
 }
 
 pub(crate) fn split_hash_pieces(piece: &[u8]) -> Vec<[u8; SHA1_HASH_SIZE]> {
