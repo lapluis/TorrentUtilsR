@@ -142,19 +142,28 @@ fn get_config_path() -> String {
     exe_dir.join("config.toml").to_string_lossy().to_string()
 }
 
-fn load_config(args: &Args) -> Config {
-    let mut config: Config = std::fs::read_to_string(&args.config)
-        .map_err(|_| ())
-        .and_then(|content| {
-            toml::from_str::<Config>(&content)
-                .map_err(|_| ())
-                .inspect(|_| {
-                    if !args.quiet {
-                        outputln!(plain, "I:", " Config loaded.");
-                    }
-                })
-        })
-        .unwrap_or_default();
+fn load_config(args: &Args) -> Result<Config, commands::CliError> {
+    let mut config = match std::fs::read_to_string(&args.config) {
+        Ok(content) => {
+            let parsed = toml::from_str::<Config>(&content).map_err(|err| {
+                commands::CliError::error(format!(
+                    "Error parsing config file '{}': {err}",
+                    args.config
+                ))
+            })?;
+            if !args.quiet {
+                outputln!(plain, "I:", " Config loaded.");
+            }
+            parsed
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(err) => {
+            return Err(commands::CliError::error(format!(
+                "Error reading config file '{}': {err}",
+                args.config
+            )));
+        }
+    };
 
     config.wait_exit = args.wait_exit || config.wait_exit;
 
@@ -165,7 +174,7 @@ fn load_config(args: &Args) -> Config {
             .unwrap_or(1),
     );
 
-    config
+    Ok(config)
 }
 
 fn wait_for_enter(wait: bool) {
@@ -184,7 +193,14 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let config = load_config(&args);
+    let config = match load_config(&args) {
+        Ok(config) => config,
+        Err(error) => {
+            error.report();
+            wait_for_enter(args.wait_exit);
+            return ExitCode::FAILURE;
+        }
+    };
     let result = commands::run(&args, &config);
 
     if let Err(error) = &result {
@@ -193,7 +209,7 @@ fn main() -> ExitCode {
     wait_for_enter(config.wait_exit);
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(_) => ExitCode::FAILURE,
     }
 }

@@ -11,12 +11,14 @@ const MAX_DISPLAYED_ANNOUNCES: usize = 20;
 const MAX_DISPLAYED_FILES: usize = 100;
 
 pub(crate) fn human_size(bytes: usize) -> String {
-    const UNITS: &[(usize, &str)] = &[
+    const UNITS: &[(u64, &str)] = &[
+        (1024 * 1024 * 1024 * 1024, "TiB"),
         (1024 * 1024 * 1024, "GiB"),
         (1024 * 1024, "MiB"),
         (1024, "KiB"),
     ];
 
+    let bytes = bytes as u64;
     for &(unit_size, unit_name) in UNITS {
         if bytes >= unit_size {
             return if bytes.is_multiple_of(unit_size) {
@@ -79,6 +81,8 @@ pub(crate) fn torrent_info(torrent: &Torrent) -> Vec<StyledLine> {
                 "    Truncated at {MAX_DISPLAYED_ANNOUNCES} announces..."
             ))]);
         }
+    } else if let Some(announce) = torrent.announce() {
+        lines.push(labeled_line("  Announce:", format!(" {announce}")));
     }
 
     if let Some(comment) = torrent.comment() {
@@ -327,9 +331,26 @@ mod tests {
 
         assert_eq!(human_size(0), "0 B");
         assert_eq!(human_size(1536), "1.50 KiB");
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(human_size(1024 * 1024 * 1024 * 1024), "1 TiB");
         assert_eq!(
             FileTree::build(&files).to_string(),
             "├── a.txt (3 [3 B])\n└── dir\n    └── b.bin (1024 [1 KiB])\n"
         );
+    }
+
+    #[test]
+    fn torrent_info_displays_single_announce_without_announce_list() {
+        let encoded = b"d8:announce15:https://example4:infod6:lengthi3e4:name8:test.bin12:piece lengthi16384e6:pieces20:....................ee";
+        let torrent = Torrent::from_bytes(encoded).expect("valid torrent");
+        let lines = torrent_info(&torrent);
+
+        let announce = lines
+            .iter()
+            .find(|line| line[0].text == "  Announce:")
+            .expect("announce line");
+        assert_eq!(announce[0].style, OutputStyle::Label);
+        assert_eq!(announce[1].text, " https://example");
+        assert_eq!(announce[1].style, OutputStyle::Plain);
     }
 }

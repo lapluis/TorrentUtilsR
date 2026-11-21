@@ -1,6 +1,6 @@
 use std::cmp;
 use std::fs::metadata;
-use std::path::{MAIN_SEPARATOR, Path};
+use std::path::{Component, Path};
 
 use natord::compare_ignore_case;
 use walkdir::WalkDir;
@@ -60,30 +60,40 @@ pub(crate) fn walk_target(target_path: &Path, walk_mode: WalkMode) -> TrResult<W
 
     if base_metadata.is_file() {
         single_file = true;
-        tr_files.push(TrFile::new(base_metadata.len() as usize, Vec::new()));
+        let file_len = usize::try_from(base_metadata.len()).map_err(|_| {
+            TrError::InvalidTorrent(String::from("file size exceeds platform limit"))
+        })?;
+        tr_files.push(TrFile::new(file_len, Vec::new()));
     } else if base_metadata.is_dir() {
-        for entry in WalkDir::new(base_path)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
+        for entry in WalkDir::new(base_path).follow_links(true) {
+            let entry = entry.map_err(std::io::Error::from)?;
             if entry.file_type().is_file() {
-                let entry_metadata = metadata(entry.path())?;
-                let relative_path = entry
-                    .path()
-                    .strip_prefix(base_path)
-                    .map_err(|_| {
-                        TrError::InvalidPath(String::from("Failed to create relative path"))
-                    })?
-                    .to_str()
-                    .ok_or_else(|| {
-                        TrError::InvalidPath(String::from("Path contains invalid UTF-8"))
-                    })?
-                    .split(MAIN_SEPARATOR)
-                    .map(str::to_owned)
-                    .collect();
+                let entry_metadata = entry.metadata().map_err(std::io::Error::from)?;
+                let rel = entry.path().strip_prefix(base_path).map_err(|_| {
+                    TrError::InvalidPath(String::from("Failed to create relative path"))
+                })?;
+                let mut relative_path = Vec::new();
+                for component in rel.components() {
+                    match component {
+                        Component::Normal(segment) => {
+                            let segment = segment.to_str().ok_or_else(|| {
+                                TrError::InvalidPath(String::from("Path contains invalid UTF-8"))
+                            })?;
+                            relative_path.push(segment.to_owned());
+                        }
+                        _ => {
+                            return Err(TrError::InvalidPath(format!(
+                                "Unexpected path component in relative path: {}",
+                                rel.display()
+                            )));
+                        }
+                    }
+                }
 
-                tr_files.push(TrFile::new(entry_metadata.len() as usize, relative_path));
+                let file_len = usize::try_from(entry_metadata.len()).map_err(|_| {
+                    TrError::InvalidTorrent(String::from("file size exceeds platform limit"))
+                })?;
+                tr_files.push(TrFile::new(file_len, relative_path));
             }
         }
     } else {

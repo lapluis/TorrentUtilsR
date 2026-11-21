@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::codec::{bencode_string, bencode_string_list, bencode_uint};
+use crate::codec::{write_bencode_string, write_bencode_string_list, write_bencode_uint};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrFile {
@@ -22,15 +22,13 @@ impl TrFile {
         &self.path
     }
 
-    fn bencode(&self) -> Vec<u8> {
-        let mut bcode: Vec<u8> = Vec::new();
-        bcode.push(b'd');
-        bcode.extend(bencode_string("length"));
-        bcode.extend(bencode_uint(self.length));
-        bcode.extend(bencode_string("path"));
-        bcode.extend(bencode_string_list(&self.path));
-        bcode.push(b'e');
-        bcode
+    fn write_bencode(&self, out: &mut Vec<u8>) {
+        out.push(b'd');
+        write_bencode_string(out, "length");
+        write_bencode_uint(out, self.length);
+        write_bencode_string(out, "path");
+        write_bencode_string_list(out, &self.path);
+        out.push(b'e');
     }
 
     pub fn join_full_path(&self, base_path: &Path) -> PathBuf {
@@ -42,12 +40,10 @@ impl TrFile {
     }
 }
 
-pub fn bencode_file_list(list: &[TrFile]) -> Vec<u8> {
-    let mut bcode: Vec<u8> = Vec::new();
-    bcode.push(b'l');
+pub(crate) fn write_bencode_file_list(out: &mut Vec<u8>, list: &[TrFile]) {
+    out.push(b'l');
     for item in list {
-        bcode.extend(item.bencode());
+        item.write_bencode(out);
     }
-    bcode.push(b'e');
-    bcode
+    out.push(b'e');
 }

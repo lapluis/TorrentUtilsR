@@ -61,6 +61,12 @@ TorrentUtilsR example.torrent path/to/data
 TorrentUtilsR path/to/data example.torrent
 ```
 
+#### Exit Codes
+
+- **`0`**: Command succeeded (for verify mode, all pieces and files passed)
+- **`1`**: Argument, configuration, I/O, or torrent parsing error
+- **`2`**: Verification completed, but one or more files or pieces failed
+
 ### Command Line Options
 
 ```

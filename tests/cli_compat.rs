@@ -141,7 +141,7 @@ fn single_file_create_info_tree_and_verify_lifecycle() {
         test_dir.missing_config(),
         String::from("-q"),
     ]);
-    assert!(verify.status.success(), "{}", text(&verify.stderr));
+    assert_eq!(verify.status.code(), Some(2), "{}", text(&verify.stderr));
     assert_eq!(
         text(&verify.stdout),
         concat!(
@@ -177,10 +177,14 @@ fn piped_output_does_not_emit_terminal_progress() {
         &[("WT_SESSION", "test-session")],
     );
     assert!(create.status.success(), "{}", text(&create.stderr));
-    assert!(create.stderr.is_empty(), "{}", text(&create.stderr));
+
+    let stderr = text(&create.stderr);
+    assert!(stderr.contains("Processed 2 pieces in "), "{stderr}");
+    assert!(!stderr.contains("✓ ["), "{stderr}");
+    assert!(!stderr.contains('\x1b'), "{stderr}");
 
     let stdout = text(&create.stdout);
-    assert!(stdout.contains("Processed 2 pieces in "), "{stdout}");
+    assert!(!stdout.contains("Processed 2 pieces in "), "{stdout}");
     assert!(!stdout.contains('\x1b'), "{stdout}");
 }
 
@@ -415,4 +419,45 @@ fn inconsistent_piece_count_is_reported_without_panicking() {
     let stderr = text(&verify.stderr);
     assert!(stderr.contains("piece count mismatch"), "{stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn trailing_slash_directory_creates_sibling_torrent() {
+    let test_dir = TestDir::new("trailing_slash");
+    let payload = test_dir.path().join("series");
+    fs::create_dir(&payload).expect("create payload dir");
+    fs::write(payload.join("ep1.bin"), b"episode1").expect("write file");
+
+    let input_with_slash = format!("{}/", path_string(&payload));
+    let create = run(&[
+        input_with_slash,
+        String::from("-g"),
+        test_dir.missing_config(),
+        String::from("-l"),
+        String::from("14"),
+        String::from("-d"),
+        String::from("-q"),
+    ]);
+    assert!(create.status.success(), "{}", text(&create.stderr));
+    assert!(test_dir.path().join("series.torrent").is_file());
+    assert!(!payload.join(".torrent").exists());
+}
+
+#[test]
+fn malformed_config_file_returns_error() {
+    let test_dir = TestDir::new("malformed_config");
+    let payload = test_dir.path().join("payload.bin");
+    let config = test_dir.path().join("bad.toml");
+    fs::write(&payload, b"data").expect("write payload");
+    fs::write(&config, "piece_size = \"not-a-number\"\n").expect("write malformed config");
+
+    let create = run(&[
+        path_string(&payload),
+        String::from("-g"),
+        path_string(&config),
+        String::from("-q"),
+    ]);
+    assert_eq!(create.status.code(), Some(1));
+    let stderr = text(&create.stderr);
+    assert!(stderr.contains("Error parsing config file"), "{stderr}");
 }

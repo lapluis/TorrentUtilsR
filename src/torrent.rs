@@ -1,9 +1,11 @@
 use std::collections::HashMap;
-use std::fs::{File, read};
+use std::fs::{File, OpenOptions, read};
 use std::io::{Error as ioError, ErrorKind, Write};
 use std::path::Path;
 
-use crate::codec::{Value, bencode_int, bencode_string, decode};
+use sha1::{Digest, Sha1};
+
+use crate::codec::{Value, decode_with_info_slice, write_bencode_int, write_bencode_string};
 use crate::error::{TrError, TrResult};
 use crate::progress::ProgressReporter;
 use crate::tr_file::TrFile;
@@ -56,13 +58,23 @@ impl Torrent {
 
     pub fn write_to_file(&self, torrent_path: impl AsRef<Path>, force: bool) -> TrResult<()> {
         let torrent_path = torrent_path.as_ref();
-        if !force && torrent_path.exists() {
-            return Err(
-                ioError::new(ErrorKind::AlreadyExists, "output file already exists").into(),
-            );
-        }
-        let mut file = File::create(torrent_path)?;
-        file.write_all(&self.to_bytes()?)?;
+        let bytes = self.to_bytes()?;
+        let mut file = if force {
+            File::create(torrent_path)?
+        } else {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(torrent_path)
+                .map_err(|err| {
+                    if err.kind() == ErrorKind::AlreadyExists {
+                        ioError::new(ErrorKind::AlreadyExists, "output file already exists")
+                    } else {
+                        err
+                    }
+                })?
+        };
+        file.write_all(&bytes)?;
         Ok(())
     }
 
@@ -72,7 +84,7 @@ impl Torrent {
     }
 
     pub fn from_bytes(bcode: &[u8]) -> TrResult<Self> {
-        let root = decode(bcode)?;
+        let (root, raw_info_bytes) = decode_with_info_slice(bcode)?;
         let tr_dict = match root {
             Value::Dict(m) => m,
             _ => {
@@ -99,7 +111,7 @@ impl Torrent {
                         )));
                     };
                     let length = match m.get("length") {
-                        Some(Value::Int(i)) => *i,
+                        Some(Value::Uint(i)) => *i,
                         _ => {
                             return Err(TrError::InvalidTorrent(String::from(
                                 "file length invalid",
@@ -142,7 +154,7 @@ impl Torrent {
             },
         )?;
         let piece_length = match info_dict.get("piece length") {
-            Some(Value::Int(i)) => *i,
+            Some(Value::Uint(i)) => *i,
             _ => {
                 return Err(TrError::InvalidTorrent(String::from(
                     "piece length missing",
@@ -203,7 +215,8 @@ impl Torrent {
             created_by: optional_string(&tr_dict, "created by")?,
             creation_date: optional_i64(&tr_dict, "creation date"),
             encoding: optional_string(&tr_dict, "encoding")?,
-            hash: optional_string(&tr_dict, "hash")?,
+            hash: optional_string(&tr_dict, "hash")?
+                .or_else(|| raw_info_bytes.map(|bytes| hex::encode(Sha1::digest(bytes)))),
             info: Some(tr_info),
         })
     }
@@ -241,50 +254,49 @@ impl Torrent {
     }
 
     pub fn to_bytes(&self) -> TrResult<Vec<u8>> {
-        let mut bcode: Vec<u8> = Vec::new();
+        let Some(info) = &self.info else {
+            return Err(TrError::MissingField("info"));
+        };
+        let mut bcode = Vec::with_capacity(info.pieces().len().saturating_add(256));
         bcode.push(b'd');
         if let Some(announce) = &self.announce {
-            bcode.extend(bencode_string("announce"));
-            bcode.extend(bencode_string(announce));
+            write_bencode_string(&mut bcode, "announce");
+            write_bencode_string(&mut bcode, announce);
         }
         if let Some(announce_list) = &self.announce_list {
-            bcode.extend(bencode_string("announce-list"));
+            write_bencode_string(&mut bcode, "announce-list");
             bcode.push(b'l');
             for tier in announce_list {
                 bcode.push(b'l');
                 for url in tier {
-                    bcode.extend(bencode_string(url));
+                    write_bencode_string(&mut bcode, url);
                 }
                 bcode.push(b'e');
             }
             bcode.push(b'e');
         }
         if let Some(comment) = &self.comment {
-            bcode.extend(bencode_string("comment"));
-            bcode.extend(bencode_string(comment));
+            write_bencode_string(&mut bcode, "comment");
+            write_bencode_string(&mut bcode, comment);
         }
         if let Some(created_by) = &self.created_by {
-            bcode.extend(bencode_string("created by"));
-            bcode.extend(bencode_string(created_by));
+            write_bencode_string(&mut bcode, "created by");
+            write_bencode_string(&mut bcode, created_by);
         }
         if let Some(creation_date) = self.creation_date {
-            bcode.extend(bencode_string("creation date"));
-            bcode.extend(bencode_int(creation_date));
+            write_bencode_string(&mut bcode, "creation date");
+            write_bencode_int(&mut bcode, creation_date);
         }
         if let Some(encoding) = &self.encoding {
-            bcode.extend(bencode_string("encoding"));
-            bcode.extend(bencode_string(encoding));
+            write_bencode_string(&mut bcode, "encoding");
+            write_bencode_string(&mut bcode, encoding);
         }
         if let Some(hash) = &self.hash {
-            bcode.extend(bencode_string("hash"));
-            bcode.extend(bencode_string(hash));
+            write_bencode_string(&mut bcode, "hash");
+            write_bencode_string(&mut bcode, hash);
         }
-        if let Some(info) = &self.info {
-            bcode.extend(bencode_string("info"));
-            bcode.extend(info.bencode());
-        } else {
-            return Err(TrError::MissingField("info"));
-        }
+        write_bencode_string(&mut bcode, "info");
+        info.write_bencode(&mut bcode);
         bcode.push(b'e');
         Ok(bcode)
     }
@@ -299,15 +311,15 @@ fn optional_string(dict: &HashMap<String, Value<'_>>, key: &str) -> TrResult<Opt
 
 fn optional_int(dict: &HashMap<String, Value<'_>>, key: &str) -> Option<usize> {
     match dict.get(key) {
-        Some(Value::Int(value)) => Some(*value),
+        Some(Value::Uint(value)) => Some(*value),
         _ => None,
     }
 }
 
 fn optional_i64(dict: &HashMap<String, Value<'_>>, key: &str) -> Option<i64> {
     match dict.get(key) {
-        Some(Value::UInt(value)) => Some(*value),
-        Some(Value::Int(value)) => Some(*value as i64),
+        Some(Value::NegInt(value)) => Some(*value),
+        Some(Value::Uint(value)) => Some(*value as i64),
         _ => None,
     }
 }

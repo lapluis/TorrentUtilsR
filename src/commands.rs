@@ -1,5 +1,6 @@
 use std::io::{Write, stdin, stdout};
 use std::path::Path;
+use std::process::ExitCode;
 
 use chrono::Local;
 use torrent_utils::{
@@ -18,7 +19,7 @@ pub(crate) struct CliError {
 }
 
 impl CliError {
-    fn error(message: impl Into<String>) -> Self {
+    pub(crate) fn error(message: impl Into<String>) -> Self {
         Self {
             style: OutputStyle::Error,
             message: message.into(),
@@ -47,10 +48,19 @@ fn with_progress<T>(quiet: bool, operation: impl FnOnce(Option<&dyn ProgressRepo
     result
 }
 
-pub(crate) fn run(args: &Args, config: &Config) -> Result<(), CliError> {
+const EXIT_VERIFICATION_FAILED: u8 = 2;
+
+fn is_torrent_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 8 && bytes[bytes.len() - 8..].eq_ignore_ascii_case(b".torrent")
+}
+
+pub(crate) fn run(args: &Args, config: &Config) -> Result<ExitCode, CliError> {
     match args.input.len() {
-        1 if args.input[0].ends_with(".torrent") => run_info(&args.input[0], args),
-        1 => run_create(&args.input[0], args, config),
+        1 if is_torrent_path(&args.input[0]) => {
+            run_info(&args.input[0], args).map(|()| ExitCode::SUCCESS)
+        }
+        1 => run_create(&args.input[0], args, config).map(|()| ExitCode::SUCCESS),
         2 => run_verify(&args.input, args, config),
         _ => Err(CliError::error(
             "Error: Please provide one target (create), one .torrent (info), or a .torrent plus target (verify).",
@@ -123,7 +133,7 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
 
     let torrent_path = match args.output.as_deref() {
         Some(path) => {
-            if !path.ends_with(".torrent") {
+            if !is_torrent_path(path) {
                 return Err(CliError::error("Error: Output path must end with .torrent"));
             }
             let path_obj = Path::new(path);
@@ -138,7 +148,11 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
                 parent_path.join(path).to_string_lossy().to_string()
             }
         }
-        None => format!("{input}.torrent"),
+        None => {
+            let trimmed = input.trim_end_matches(['/', '\\']);
+            let base = if trimmed.is_empty() { input } else { trimmed };
+            format!("{base}.torrent")
+        }
     };
 
     let mut force_overwrite = args.force;
@@ -203,10 +217,10 @@ fn run_create(input: &str, args: &Args, config: &Config) -> Result<(), CliError>
     Ok(())
 }
 
-fn run_verify(inputs: &[String], args: &Args, config: &Config) -> Result<(), CliError> {
-    let (torrent_path, target_path) = if inputs[0].ends_with(".torrent") {
+fn run_verify(inputs: &[String], args: &Args, config: &Config) -> Result<ExitCode, CliError> {
+    let (torrent_path, target_path) = if is_torrent_path(&inputs[0]) {
         (inputs[0].as_str(), inputs[1].as_str())
-    } else if inputs[1].ends_with(".torrent") {
+    } else if is_torrent_path(&inputs[1]) {
         (inputs[1].as_str(), inputs[0].as_str())
     } else {
         return Err(CliError::error(
@@ -252,7 +266,11 @@ fn run_verify(inputs: &[String], args: &Args, config: &Config) -> Result<(), Cli
     .map_err(|e| CliError::error(format!("Error during verification: {e}")))?;
 
     print_verification_report(&report);
-    Ok(())
+    if report.is_ok() {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::from(EXIT_VERIFICATION_FAILED))
+    }
 }
 
 fn confirm_overwrite(torrent_path: &str) -> bool {
